@@ -49,3 +49,5 @@ def generate_tables(c, repo, library, table, log, env):
     else:
         c.run([sys.executable, Path(__file__).with_name('c1_generate.py'), tools/'c1_guard.py',
                library, table('c1_full.tsv')], log, env)
+        if (tools/'cb_extent.py').is_file():
+            c.run([sys.executable, tools/'cb_extent.py', library, table('cb_extent.tsv')], log, env)

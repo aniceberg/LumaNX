@@ -19,4 +19,7 @@ if __name__=='__main__':
             if i%64==0 or i==len(files):print('NSMAC_PROGRESS '+json.dumps({'done':i,'total':len(files),'unit':'shaders'}),flush=True)
     # Preserve the upstream file convention exactly.
     chain=Path(src).name
+    try: stamp=dict(l.split('\t',1) for l in (Path(src)/'inputs.tsv').read_text().splitlines() if '\t' in l and not l.startswith('#'))
+    except OSError: stamp={}
+    if stamp.get('inputs'): chain+=' inputs '+stamp['inputs']
     Path(out).write_text(f'# chain {chain} generated {datetime.datetime.now().isoformat()}\n'+''.join(k+'\n' for k in keys))

@@ -123,6 +123,8 @@ final class WorkerOutput: @unchecked Sendable {
         let args = CommandLine.arguments
         if let overrideRoot { privateRoot = overrideRoot }
         else if let i = args.firstIndex(of:"--data-root"), args.count > i+1 { privateRoot = URL(fileURLWithPath:args[i+1]) }
+        // Test builds name their own folder so they can never open the real library.
+        else if let name = Bundle.main.object(forInfoDictionaryKey:"LumaNXDataDirectory") as? String, !name.isEmpty, !name.contains("/") { privateRoot = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent(name) }
         // Preserve the pre-rename application data directory for existing installations.
         else { privateRoot = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("NSMac") }
         if let overrideResources { resources = overrideResources }
@@ -249,6 +251,31 @@ final class WorkerOutput: @unchecked Sendable {
         preferences.engineDir=folder.path;savePreferences()
         checks=[];environmentReportComplete=false;engineSupportsInput=false
         refresh();checkEnvironment()
+    }
+    let nextendo = NextendoModel()
+    private var onlineRequest: [String:Any] { ["network":"nextendo","onlineEngineDir":preferences.onlineEngineDir ?? ""] }
+    func chooseOnlineEngine() {
+        let panel=NSOpenPanel();panel.title=L("选择联机引擎…");panel.canChooseDirectories=true;panel.canChooseFiles=false
+        guard panel.runModal() == .OK,let folder=panel.url else {return}
+        preferences.onlineEngineDir=folder.path;savePreferences()
+    }
+    func prepareOnlineEngine() {
+        guard canManageToolchain else {return}
+        executionTask=worker("prepareEngine",extra:onlineRequest) { _ in self.notice="引擎工具已就绪。" }
+    }
+    func prepareOnline(_ game: Game) {
+        guard !executionBusy, queue.isEmpty else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
+        selection="tasks"
+        executionTask=worker("build",extra:onlineRequest.merging(["gameId":game.id]) {$1}) { _ in self.notice="游戏已准备完成，可以启动。" }
+    }
+    func launchOnline(_ game: Game) {
+        guard !executionBusy, queue.isEmpty, runtimeReady else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
+        Task {
+            await nextendo.reload()
+            guard nextendo.account?.hasNEXCredential == true else { error = nextendo.message ?? "请先在设置中登录 Nextendo。"; return }
+            guard !executionBusy, queue.isEmpty else { return }
+            executionTask=worker("launch",extra:onlineRequest.merging(["gameId":game.id,"gameLanguage":gameLanguage(for:game.id).rawValue]) {$1})
+        }
     }
     func prepareEngine() {
         guard canManageToolchain else {return}

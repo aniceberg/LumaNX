@@ -200,7 +200,8 @@ def prepare(c):
         shipped = c.resource/'Engine/reader'
         shipped_record = read(shipped/'manifest.json', {})
         use_shipped = info['fingerprint'].startswith('bundled-') and shipped_record.get('fingerprint') == info['fingerprint']
-        if shipped.exists() and not use_shipped: raise Failure('内置读取器与引擎版本不匹配，请重新安装完整璃游。')
+        # A separately chosen online engine compiles its own reader; a mismatched bundled one is still refused.
+        if shipped.exists() and not use_shipped and c.r.get('network') != 'nextendo': raise Failure('内置读取器与引擎版本不匹配，请重新安装完整璃游。')
         sdk, version = (None, shipped_record.get('sdk', '')) if use_shipped else find_sdk(c)
         if not use_shipped and sdk is None: raise Failure(SDK_HELP)
         engines = c.private/'engines'; engines.mkdir(exist_ok=True)

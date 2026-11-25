@@ -278,6 +278,7 @@ def catalog(c):
         g['preparationVersion']=strategy.get('version','')
         selected=next((x for x in g['packages'] if p and f"v{x['version']}"==strategy.get('version',p.get('package')) and x['type'] in ('base','update')),None)
         if selected: g['display']=selected['display'] or p['builds'].get(strategy.get('version',p['package']),{}).get('display',strategy.get('version',''))
+        g['onlineReady']=any((c.library/'games'/g['id']/name/'current/online/routes.tsv').is_file() for name in ('nextendo','nextendo-shared'))
         manifest=read(c.library/'games'/g['id']/'current/manifest.json',{})
         cover=c.library/'games'/g['id']/'cover.jpg'; g['cover']=str(cover) if cover.exists() else ''
         nas_runtime=g.get('nasRuntime',{}) if not manifest else {}

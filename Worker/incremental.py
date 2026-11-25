@@ -267,7 +267,12 @@ class Graph:
 def workspace(c, game, target, new_key):
     """One writable workspace per target; adopt a legacy workspace in place.
     Installed releases and the other target's workspace remain independent."""
-    parent=c.library/'cache'/game['id'];parent.mkdir(parents=True,exist_ok=True)
+    parent=c.library/'cache'/game['id']
+    # The online engine keeps its own workspace, so switching modes rebuilds nothing.
+    if getattr(c,'r',{}).get('network')=='nextendo': 
+        from online import slot
+        parent=parent/slot(c)
+    parent.mkdir(parents=True,exist_ok=True)
     marker=parent/f'workspace-{target}.json'
     record=cache_object(marker)
     directory=record.get('directory')

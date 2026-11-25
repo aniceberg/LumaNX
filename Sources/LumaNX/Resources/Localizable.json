@@ -3942,5 +3942,117 @@
   {
     "source": "下次启动时生效。",
     "en": "Applies on next launch."
+  },
+  {
+    "source": "Nextendo 联机（实验性）",
+    "en": "Nextendo online (experimental)"
+  },
+  {
+    "source": "客户端 ID（nxc_…）",
+    "en": "Client ID (nxc_…)"
+  },
+  {
+    "source": "取消登录",
+    "en": "Cancel sign-in"
+  },
+  {
+    "source": "登录 Nextendo",
+    "en": "Sign in to Nextendo"
+  },
+  {
+    "source": "退出 Nextendo",
+    "en": "Sign out of Nextendo"
+  },
+  {
+    "source": "选择联机引擎…",
+    "en": "Choose online engine…"
+  },
+  {
+    "source": "准备联机引擎",
+    "en": "Prepare online engine"
+  },
+  {
+    "source": "联机启动",
+    "en": "Launch online"
+  },
+  {
+    "source": "准备联机版本",
+    "en": "Prepare online version"
+  },
+  {
+    "source": "联机版本使用独立引擎与运行文件，但与离线版本共用存档；每次准备前会自动备份。",
+    "en": "The online version has its own engine and runtime but shares saves with the offline version; saves are backed up each time it is prepared."
+  },
+  {
+    "source": "请输入在 Nextendo 开发者页面注册的客户端 ID（以 nxc_ 开头）。",
+    "en": "Enter the client ID you registered on Nextendo Developers (it starts with nxc_)."
+  },
+  {
+    "source": "无法打开登录页面，请检查默认浏览器。",
+    "en": "The sign-in page could not be opened. Check your default browser."
+  },
+  {
+    "source": "Nextendo 登录未完成，请重试。",
+    "en": "Nextendo sign-in was not completed. Try again."
+  },
+  {
+    "source": "请先在设置中登录 Nextendo。",
+    "en": "Sign in to Nextendo in Settings first."
+  },
+  {
+    "source": "尚未选择 Nextendo 联机引擎目录，请先在设置中指定。",
+    "en": "No Nextendo online engine folder is selected. Choose one in Settings."
+  },
+  {
+    "source": "所选目录不包含 Nextendo 联机引擎，请使用 scripts/fetch_online_engine.py 获取。",
+    "en": "The selected folder has no Nextendo online engine. Get it with scripts/fetch_online_engine.py."
+  },
+  {
+    "source": "无法准备 Nextendo 加密组件，请检查网络后重试。",
+    "en": "The Nextendo crypto component could not be prepared. Check the network and try again."
+  },
+  {
+    "source": "Nextendo 目前未开放此游戏。",
+    "en": "Nextendo does not currently offer this game."
+  },
+  {
+    "source": "Nextendo 不接受游戏版本 {0}，可用版本：{1}",
+    "en": "Nextendo does not accept game version {0}. Accepted versions: {1}"
+  },
+  {
+    "source": "无法验证 Nextendo 游戏目录，请检查网络后重试。",
+    "en": "The Nextendo game catalog could not be verified. Check the network and try again."
+  },
+  {
+    "source": "无法准备 Nextendo 服务配置，请检查网络后重试。",
+    "en": "The Nextendo service profile could not be prepared. Check the network and try again."
+  },
+  {
+    "source": "Nextendo 日程数据暂不可用；游戏启动时会再次尝试。",
+    "en": "Nextendo schedule data is unavailable; the game will retry at launch."
+  },
+  {
+    "source": "Nextendo 签名补丁未通过验证，未修改任何游戏代码。",
+    "en": "The signed Nextendo patch failed verification. No game code was changed."
+  },
+  {
+    "source": "Nextendo 没有适用于此游戏构建的签名补丁。",
+    "en": "Nextendo has no signed patch for this game build."
+  },
+  {
+    "source": "Nextendo 运行文件不完整，请重新准备联机版本。",
+    "en": "The Nextendo runtime is incomplete. Prepare the online version again."
+  },
+  {
+    "source": "准备 Nextendo 联机组件",
+    "en": "Prepare Nextendo online components"
+  },
+  {
+    "source": "Nextendo 联机目前仅支持 Mac。",
+    "en": "Nextendo online currently supports Mac only."
+  },
+  {
+    "source": "请先退出游戏或等待当前任务结束，再准备联机引擎。",
+    "en": "Quit the running game or wait for the current task to finish before preparing the online engine."
   }
 ]

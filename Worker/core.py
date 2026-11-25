@@ -104,6 +104,10 @@ class Context:
         # The shipped engine is authoritative, including for old preferences that
         # still point to an external checkout. Source-only fixtures may opt out.
         self.engine = bundled if bundled.exists() else Path(selected).expanduser().resolve() if selected else None
+        if request.get('network') == 'nextendo':
+            from online import select_engine
+            try: self.engine = select_engine(request)
+            except Failure as error: self.engine, self.engineError = None, error
         self.runtime = self.resource / 'Runtime'
         if not self.runtime.exists() and (self.resource/'work/Runtime/versions.json').is_file():
             self.runtime = self.resource/'work/Runtime'

@@ -45,6 +45,7 @@ struct Game: Codable, Identifiable {
     var archiveSize: Int64?
     var restoreSize: Int64?
     var sourceKind: String?
+    var onlineReady: Bool?
     var importedRetailVersion: (value: String, internalVersion: String, fromFilename: Bool, isUpdate: Bool)? {
         let candidates = packages.filter { $0.type == "update" || $0.type == "base" }
             .sorted { $0.version > $1.version }
@@ -131,7 +132,7 @@ struct InputConfig: Codable, Equatable {
         return out
     }
 }
-struct Preferences: Codable { var library: String = ""; var libraryId: String = ""; var developerDir = "/Applications/Xcode.app/Contents/Developer"; var onboardingComplete = false; var prepareAfterImport: Bool?; var language: String?; var appearance: String?; var engineDir: String?; var gameLanguage: String?; var gameLanguages: [String:String]?; var conversionOutput:String?; var archiveRoot:String?; var performanceHUD:Bool?; var recordPerformance:Bool?; var benchmarkLabel:String? }
+struct Preferences: Codable { var library: String = ""; var libraryId: String = ""; var developerDir = "/Applications/Xcode.app/Contents/Developer"; var onboardingComplete = false; var prepareAfterImport: Bool?; var language: String?; var appearance: String?; var engineDir: String?; var gameLanguage: String?; var gameLanguages: [String:String]?; var conversionOutput:String?; var archiveRoot:String?; var performanceHUD:Bool?; var recordPerformance:Bool?; var benchmarkLabel:String?; var nextendoClientID:String?; var onlineEngineDir:String? }
 
 func keyName(_ b: KeyBinding?) -> String {
     guard let b else { return L("未绑定") }

@@ -180,6 +180,14 @@ struct GameDetail: View {
                         .help((game.missing ?? []).map {L($0)}.joined(separator:"\n"))
                 }
             }
+            if store.preferences.onlineEngineDir != nil {
+                HStack {
+                    if game.onlineReady==true {
+                        Button {store.launchOnline(game)} label:{Label(L("联机启动"),systemImage:"network")}.disabled(store.executionBusy || !store.queue.isEmpty)
+                    }
+                    Button {store.prepareOnline(game)} label:{Label(L("准备联机版本"),systemImage:"hammer")}.disabled(store.executionBusy || !store.queue.isEmpty || game.packages.isEmpty)
+                }.controlSize(.small)
+            }
             DisclosureGroup(isExpanded:$detailsExpanded) {
                 VStack(alignment:.leading,spacing:10) {
                     HStack(alignment:.top,spacing:16) {
@@ -595,6 +603,7 @@ struct SettingsView: View {
                     Toggle(L("导入后自动准备支持的游戏"),isOn:Binding(get:{store.prepareAfterImport},set:{store.prepareAfterImport=$0})).toggleStyle(.switch).controlSize(.small)
                 }
             }
+            NextendoPanel(model:store.nextendo)
             GlassPanel {
                 HStack {
                     Label(L("运行与构建环境"),systemImage:"cpu").font(.headline)
