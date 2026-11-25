@@ -26,6 +26,10 @@ def game_root(c, game_id):
     root = c.library/'games'/game_id
     return root/slot(c) if enabled(c) else root
 
+def schedule(c, game_id, version):
+    """Event data lives beside the online runtime, so every app that opens the library finds it."""
+    return game_root(c,game_id)/'bcat'/version
+
 def slot(c):
     engine = getattr(c,'engine',None)
     return SHARED if engine and reads_images(engine) else MODE
@@ -62,7 +66,8 @@ def services(c, repo, root, gp, version):
     except ERRORS as error: raise Failure('无法准备 Nextendo 服务配置，请检查网络后重试。') from error
     data = None
     if gp.id.lower() in bcat.TITLES:
-        data = c.private/'online/bcat'/gp.id.lower()/version
+        data = schedule(c,gp.id,version)
+        data.parent.mkdir(parents=True,exist_ok=True)
         try: bcat.prepare(repo, gp.id.lower(), version, root/'nextendo-catalog/game-catalog.json', data)
         except ERRORS:
             c.emit('message','Nextendo 日程数据暂不可用；游戏启动时会再次尝试。')
@@ -179,6 +184,6 @@ def runtime_env(c, runtime, game_id):
     # Opt-in diagnostics: result codes and counters only, never names, tokens or traffic.
     if (c.private/'online/trace').is_file(): env.update(DM_ACCOUNT_TRACE='1', DM_SSL_TRACE='1', DM_NET_TRACE='1')
     version = read(Path(runtime)/'manifest.json',{}).get('version','')
-    data = c.private/'online/bcat'/game_id.lower()/version
+    data = schedule(c,game_id,version)
     if (data/'setup.json').is_file(): env['DM_NEXTENDO_BCAT_DIR'] = str(data)
     return env

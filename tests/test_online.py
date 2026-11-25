@@ -94,6 +94,14 @@ class OnlineTests(unittest.TestCase):
         (rt/'shaders').mkdir();(rt/'shaders/b-abc.img').write_text('x')
         with self.assertRaises(Failure):online.runtime_env(c,rt,GAME)
         (rt/'shaders/b-abc').mkdir();online.runtime_env(c,rt,GAME)
+    def test_event_data_is_found_by_every_app_that_opens_the_library(self):
+        c=self.context(network='nextendo',onlineEngineDir=str(self.engine));rt=self.root/'rt'
+        (rt/'online').mkdir(parents=True);(rt/'online/routes.tsv').write_text('x');self.plist(rt);atomic(rt/'manifest.json',{'version':'12.0.0'})
+        self.assertNotIn('DM_NEXTENDO_BCAT_DIR',online.runtime_env(c,rt,GAME))
+        data=online.schedule(c,GAME,'12.0.0');data.mkdir(parents=True);(data/'setup.json').write_text('{}')
+        self.assertTrue(data.is_relative_to(c.library))
+        c.private=self.root/'another-app'
+        self.assertEqual(online.runtime_env(c,rt,GAME)['DM_NEXTENDO_BCAT_DIR'],str(data))
     def test_shaders_are_installed_as_files_for_hosts_without_an_image_reader(self):
         c=self.context(network='nextendo',onlineEngineDir=str(self.engine));src=self.root/'cache';lib=src/'b-abc';lib.mkdir(parents=True);(src/'cas').mkdir()
         for n in ('k_b.metallib','k_ba.metallib','k_b.json','k_b.metal','inputs.tsv','_b_build.json'):(lib/n).write_text(n)
