@@ -183,4 +183,23 @@ class DerivedPipelineTests(unittest.TestCase):
     def test_wrong_ios_shader_platform_is_not_checkpointed_and_can_retry(self): self.pipeline('ios',fail='ios_platform')
 
 
+class TableHeadTests(unittest.TestCase):
+    """The c1_full.tsv / cb_extent.tsv header rule matches nxnative's table_head_ok."""
+    def test_accepts_the_bare_header_current_nxnative_writes(self):
+        from shader_artifacts import table_head_ok
+        self.assertTrue(table_head_ok('# chain b-be84b2439320 inputs 8b914a256243\nkey\n','be84b2439320','8b914a256243'))
+
+    def test_accepts_older_timestamped_and_crlf_headers(self):
+        from shader_artifacts import table_head_ok
+        self.assertTrue(table_head_ok('# chain b-abc inputs 123 2026-11-01T21:36:26+00:00\n','abc','123'))
+        self.assertTrue(table_head_ok('# chain b-abc inputs 123\r\nkey\r\n','abc','123'))
+
+    def test_rejects_other_chain_inputs_or_an_extended_digest(self):
+        from shader_artifacts import table_head_ok
+        self.assertFalse(table_head_ok('# chain b-abc inputs 1234\n','abc','123'))
+        self.assertFalse(table_head_ok('# chain b-abd inputs 123\n','abc','123'))
+        self.assertFalse(table_head_ok('key\n# chain b-abc inputs 123\n','abc','123'))
+        self.assertFalse(table_head_ok('','abc','123'))
+
+
 if __name__=='__main__': unittest.main()

@@ -181,11 +181,10 @@ def shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources,target,reuse=
 
 
 def validate_tables(cache,gp,chain):
-    from shader_artifacts import library_view
+    from shader_artifacts import library_view, table_head_ok
     try:
         lib=library_view(cache,chain)
         stamp=dict(line.split('\t',1) for line in (lib/'inputs.tsv').read_text().splitlines() if '\t' in line and not line.startswith('#'))
         if stamp.get('game')!=gp.id or not stamp.get('inputs') or stamp['inputs']=='none': raise ValueError('inputs')
-        head=f"# chain b-{chain} inputs {stamp['inputs']} "
-        if not all(gp.table(t).read_text().startswith(head) for t in ('c1_full.tsv','cb_extent.tsv')): raise ValueError('tables')
+        if not all(table_head_ok(gp.table(t).read_text(),chain,stamp['inputs']) for t in ('c1_full.tsv','cb_extent.tsv')): raise ValueError('tables')
     except (OSError,ValueError): raise Failure('版本配置与着色器产物不一致，请重新准备游戏。')

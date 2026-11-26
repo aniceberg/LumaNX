@@ -209,8 +209,8 @@ def reusable_shaders(c, repo, game, gp, env):
             if digest(gp.table('shader_map.tsv')) != files['profile/shader_map.tsv'][1]: continue
             if inputs is None: inputs = profile_inputs(repo, gp, env)
             if not inputs: return None
-            head = f'# chain b-{chain} inputs {inputs} '
-            if not all((runtime/'profile'/n).read_text().startswith(head) for n in ('c1_full.tsv','cb_extent.tsv')): continue
+            from shader_artifacts import table_head_ok
+            if not all(table_head_ok((runtime/'profile'/n).read_text(), chain, inputs) for n in ('c1_full.tsv','cb_extent.tsv')): continue
             if all(digest(runtime/name, lambda *_: c.check()) == files[name][1] for name in names):
                 return runtime, files
         except (OSError, AttributeError, KeyError, IndexError, TypeError, ValueError, RuntimeError):

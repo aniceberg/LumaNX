@@ -14,6 +14,18 @@ def image_reader():
     return module(tools/'romfs.py', 'lumanx_shader_romfs')
 
 
+def table_head_ok(text, chain, inputs):
+    """Whether c1_full.tsv / cb_extent.tsv text names this library's chain and inputs.
+
+    Mirrors nxnative's table_head_ok (nvn_mtl.m): the first line is exactly the
+    header, or the header and a space (older builds appended a timestamp). A longer
+    inputs digest does not match.
+    """
+    want = f'# chain b-{chain} inputs {inputs}'
+    first = text.split('\n', 1)[0].removesuffix('\r')
+    return first == want or first.startswith(want + ' ')
+
+
 def library_view(cache_dir, chain):
     folder = Path(cache_dir)/('b-'+chain)
     image = folder.with_suffix('.img')
