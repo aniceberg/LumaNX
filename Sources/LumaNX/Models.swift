@@ -110,6 +110,36 @@ struct TaskRecord: Codable, Identifiable {
     var milestones:[Milestone]?; var milestone:String?; var milestoneStarted:[String:Double]?
     var milestoneCached:[String]?
     var diagnostics: [TaskDiagnostic]?
+    /// Measured NAS transfer speed in bytes per second, smoothed; reset at each stage.
+    var transferRate: Double?
+    var transferSampleAt: Double?
+    var transferSampleDone: Double?
+    static let transferOperations: Set<String> = ["publishNAS","restoreNAS","publishNASSources","archiveGame","restoreGame"]
+    /// Worker stage names (nas_play.py, runtime_archive.py) whose bytes come from, or go to, the NAS.
+    static let readStages: Set<String> = ["Verify playable NAS runtime","Copy playable runtime back to Mac","Verify compressed NAS archive","Restore and verify compiled game locally"]
+    static let writeStages: Set<String> = ["Copy playable runtime to NAS","Compress compiled game to NAS"]
+    var measuresTransfer: Bool { unit == "B" && Self.transferOperations.contains(operation) }
+    /// Samples the byte count at most once a second; the speed is a moving average so one slow file does not swing it.
+    mutating func sampleTransfer(now: Double) {
+        guard measuresTransfer, let done, done.isFinite else { return }
+        guard let at = transferSampleAt, let before = transferSampleDone, done >= before else {
+            transferSampleAt = now; transferSampleDone = done; return
+        }
+        let seconds = now - at
+        guard seconds >= 1 else { return }
+        let instant = (done - before) / seconds
+        transferRate = transferRate.map { 0.7 * $0 + 0.3 * instant } ?? instant
+        transferSampleAt = now; transferSampleDone = done
+    }
+    mutating func resetTransfer() { transferRate = nil; transferSampleAt = nil; transferSampleDone = nil }
+    /// For example "Write 34 MB/s" (decimal megabytes, as Finder shows sizes).
+    var transferRateText: String? {
+        guard measuresTransfer, let rate = transferRate, rate.isFinite, rate > 0 else { return nil }
+        let megabytes = rate / 1_000_000
+        let amount = megabytes < 10 ? String(format: "%.1f", megabytes) : String(format: "%.0f", megabytes)
+        let direction = stage.map { Self.readStages.contains($0) ? L("读取") : Self.writeStages.contains($0) ? L("写入") : L("传输") } ?? L("传输")
+        return "\(direction) \(amount) MB/s"
+    }
     var hasWarnings: Bool { diagnostics?.contains(where:\.isWarning) == true }
     var progressFraction: Double? {
         guard let done,let total,done.isFinite,total.isFinite,total>0 else {return nil}

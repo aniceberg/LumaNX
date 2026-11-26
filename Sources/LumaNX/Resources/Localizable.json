@@ -4202,5 +4202,17 @@
   {
     "source": "请先退出游戏或等待当前任务结束，再准备联机引擎。",
     "en": "Quit the running game or wait for the current task to finish before preparing the online engine."
+  },
+  {
+    "source": "读取",
+    "en": "Read"
+  },
+  {
+    "source": "写入",
+    "en": "Write"
+  },
+  {
+    "source": "传输",
+    "en": "Transfer"
   }
 ]

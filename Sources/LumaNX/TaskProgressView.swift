@@ -39,6 +39,7 @@ struct TaskProgressView: View {
                     Text("\(Int(fraction*100))%")
                     Text(amount(min(done,total))+" / "+amount(total))
                     if let unit=task.unit,let label=["files":"个文件","shaders":"个着色器","checks":"项检查"][unit] {Text(L(label))}
+                    if let rate=task.transferRateText {Text("· "+rate).monospacedDigit()}
                     Spacer()
                     elapsed
                 }.font(.caption).foregroundStyle(.secondary)
@@ -101,7 +102,6 @@ struct TaskActivityView: View {
                     Label(heartbeat<10 ? "Worker responding · heartbeat \(age(heartbeat)) ago" : "Worker heartbeat delayed · \(age(heartbeat)) ago",systemImage:heartbeat<10 ? "waveform.path" : "exclamationmark.circle")
                         .foregroundStyle(heartbeat<10 ? Color.secondary : Color.orange)
                 } else {Text("Waiting for worker heartbeat…").foregroundStyle(.secondary)}
-                if let progress {Text("Last measured progress change: \(age(progress)) ago").foregroundStyle(.secondary)}
                 if let output=Self.seconds(since:task.lastOutputAt,now:now) {Text("Last log output: \(age(output)) ago").foregroundStyle(.secondary)}
                 if let progress,progress>=60 {Text("No new measured progress. The task may still be working; check its log for details.").foregroundStyle(.orange)}
             }.font(.caption).textSelection(.enabled)

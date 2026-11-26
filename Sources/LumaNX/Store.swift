@@ -662,8 +662,8 @@ final class WorkerOutput: @unchecked Sendable {
             if let stage=e["stage"] as? String {tasks[i].stage=stage}
             if let index=e["stageIndex"] as? Int {tasks[i].stageIndex=index}
             if let count=e["stageCount"] as? Int {tasks[i].stageCount=count}
-            if e["type"] as? String == "stage" || e["resetProgress"] as? Bool == true {tasks[i].done=nil;tasks[i].total=nil;tasks[i].unit=nil}
-            if e["done"] != nil || e["total"] != nil {tasks[i].done=(e["done"] as? NSNumber)?.doubleValue;tasks[i].total=(e["total"] as? NSNumber)?.doubleValue;tasks[i].unit=e["unit"] as? String}
+            if e["type"] as? String == "stage" || e["resetProgress"] as? Bool == true {tasks[i].done=nil;tasks[i].total=nil;tasks[i].unit=nil;tasks[i].resetTransfer()}
+            if e["done"] != nil || e["total"] != nil {tasks[i].done=(e["done"] as? NSNumber)?.doubleValue;tasks[i].total=(e["total"] as? NSNumber)?.doubleValue;tasks[i].unit=e["unit"] as? String;tasks[i].sampleTransfer(now:now)}
             if let elapsed=(e["elapsed"] as? NSNumber)?.doubleValue {tasks[i].elapsed=elapsed}
             if let msg = e["message"] as? String, !msg.isEmpty { tasks[i].message = msg }
             if let state = e["state"] as? String { tasks[i].state = state }
