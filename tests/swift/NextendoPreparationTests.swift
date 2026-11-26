@@ -76,4 +76,19 @@ final class NextendoPreparationTests: XCTestCase {
         XCTAssertEqual(status.acceptedVersions,["1.8.0"])
         XCTAssertEqual(status.targetVersion,"1.8.0")
     }
+
+    func testPreparingAgainRefreshesTheOnlineBuildOnceOneExists() {
+        var game = fixture()
+        XCTAssertFalse(game.preparesOnline(onlineEngineDir:"/engine"))
+        game.onlineReady = true
+        XCTAssertTrue(game.preparesOnline(onlineEngineDir:"/engine"))
+        XCTAssertFalse(game.preparesOnline(onlineEngineDir:nil))
+    }
+
+    func testCatalogFlagForOfflinePlayFromTheOnlineBuildDecodes() throws {
+        let data = Data(#"{"id":"\#(title)","name":"Splatoon 3","display":"12.0.0","packages":[],"hidden":false,"ready":true,"onlineReady":true,"offlineFromOnline":true}"#.utf8)
+        let game = try JSONDecoder().decode(Game.self,from:data)
+        XCTAssertEqual(game.offlineFromOnline,true)
+        XCTAssertTrue(game.preparesOnline(onlineEngineDir:"/engine"))
+    }
 }

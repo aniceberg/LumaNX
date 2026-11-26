@@ -289,8 +289,15 @@ struct GameDetail: View {
                 }
                 toolDivider
                 if game.ready==true {
-                    Button {store.enqueue(game)} label:{GameToolLabel(title:"重新检查并准备",symbol:"hammer",accessory:"chevron.right")}
-                        .disabled(!game.buildable)
+                    if game.preparesOnline(onlineEngineDir:store.preferences.onlineEngineDir) {
+                        // One build serves both modes: refresh the online build, never add an offline one.
+                        Button {store.prepareOnline(game)} label:{GameToolLabel(title:"重新检查并准备",symbol:"hammer",accessory:"chevron.right")}
+                            .disabled(!NextendoPreparationStatus(game:game,catalog:store.nextendoCatalogSnapshot).canPrepare || store.executionBusy || !store.queue.isEmpty)
+                            .help(L("为此游戏准备 Nextendo 多人联机。复用匹配的已编译着色器，并共享现有存档。"))
+                    } else {
+                        Button {store.enqueue(game)} label:{GameToolLabel(title:"重新检查并准备",symbol:"hammer",accessory:"chevron.right")}
+                            .disabled(!game.buildable)
+                    }
                     toolDivider
                 }
                 nextendoPreparation
@@ -384,11 +391,14 @@ struct GameDetail: View {
     private var nextendoPreparation: some View {
         let status = NextendoPreparationStatus(game:game,catalog:store.nextendoCatalogSnapshot)
         return VStack(alignment:.leading,spacing:4) {
-            Button {store.prepareOnline(game)} label:{
-                GameToolLabel(title:"添加 Nextendo 支持",symbol:"network",accessory:"chevron.right")
+            // Once the online build exists, "Check & prepare again" refreshes it; only the status lines remain here.
+            if !(game.ready==true && game.preparesOnline(onlineEngineDir:store.preferences.onlineEngineDir)) {
+                Button {store.prepareOnline(game)} label:{
+                    GameToolLabel(title:"添加 Nextendo 支持",symbol:"network",accessory:"chevron.right")
+                }
+                .disabled(!status.canPrepare || store.executionBusy || !store.queue.isEmpty)
+                .help(L("为此游戏准备 Nextendo 多人联机。复用匹配的已编译着色器，并共享现有存档。"))
             }
-            .disabled(!status.canPrepare || store.executionBusy || !store.queue.isEmpty)
-            .help(L("为此游戏准备 Nextendo 多人联机。复用匹配的已编译着色器，并共享现有存档。"))
             VStack(alignment:.leading,spacing:4) {
                 if let version = status.installedVersion {
                     Text(String(format:L("已安装版本 %@"),version))

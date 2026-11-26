@@ -54,7 +54,14 @@ struct Game: Codable, Identifiable {
     var restoreSize: Int64?
     var sourceKind: String?
     var onlineReady: Bool?
+    /// The online build is also what offline play runs (no local offline build).
+    var offlineFromOnline: Bool?
     var onlinePreparation: OnlinePreparation?
+    /// A game with an online build keeps that one build for both modes, so preparing
+    /// it again refreshes the online build instead of adding a separate offline one.
+    func preparesOnline(onlineEngineDir: String?) -> Bool {
+        onlineReady == true && onlineEngineDir != nil
+    }
     var importedRetailVersion: (value: String, internalVersion: String, fromFilename: Bool, isUpdate: Bool)? {
         let candidates = packages.filter { $0.type == "update" || $0.type == "base" }
             .sorted { $0.version > $1.version }
