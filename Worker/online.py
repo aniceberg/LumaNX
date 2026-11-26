@@ -98,10 +98,10 @@ def variant(c, up, repo, root, selected, env, gp, protocol):
         raise Failure('Nextendo 没有适用于此游戏构建的签名补丁。')
     return out
 
-def install(root, stage, version, name):
+def install(root, stage, version, name, *, patch_free=False):
     """Add online files to a staged runtime; the caller inventories and publishes it atomically."""
     source = root/'nextendo-modules'/MODE
-    if source.is_dir(): shutil.copytree(source, stage/'modules'/MODE)
+    if not patch_free and source.is_dir(): shutil.copytree(source, stage/'modules'/MODE)
     shutil.copytree(root/'nextendo-services', stage/'online')
     # The host puts this version in the account token and refuses to make one without
     # it. Foundation reads an Info.plist beside a bare executable as its bundle's.

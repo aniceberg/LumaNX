@@ -405,6 +405,26 @@ public actor NextendoAccountService {
         self.store = store; self.http = http; self.makeReceiver = makeReceiver; self.now = now
     }
     public func currentAccount() throws -> NextendoAccountSummary? { try store.load()?.summary(at: now()) }
+    /// The provider requires the application's OAuth grant for this endpoint.
+    /// The credential and provider response stay on the Swift side of the worker boundary.
+    public func verifyDeveloperNetworkConfiguration() async throws {
+        guard try await prepareGameAccount() != nil,
+              let grant = try store.load()?.renewal, grant.expiresAt > now(),
+              grant.scopes.contains("game.matchmaking") else { throw NextendoError.authorizationDenied }
+        var request = URLRequest(url:URL(string:"https://nextendo.network/api/developers/network-config")!)
+        request.setValue("Bearer " + grant.accessToken,forHTTPHeaderField:"Authorization")
+        request.setValue(grant.clientID,forHTTPHeaderField:"X-Nextendo-Client-Id")
+        let response: NextendoHTTPResponse
+        do { response = try await http.send(request) }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw NextendoError.requestFailed }
+        try Task.checkCancellation()
+        guard response.statusCode == 200 else { throw NextendoError.httpStatus(response.statusCode) }
+        guard response.data.count <= 1_048_576,
+              let configuration = try? JSONSerialization.jsonObject(with:response.data) as? [String:Any],
+              !configuration.isEmpty, configuration["error"] == nil else { throw NextendoError.invalidResponse }
+        guard try store.load()?.renewal == grant else { throw NextendoError.authorizationUnavailable }
+    }
     public func gameLaunchCredential() throws -> Data {
         guard let session = try store.load(), session.summary(at: now()).hasNEXCredential else {
             throw NextendoError.authorizationUnavailable

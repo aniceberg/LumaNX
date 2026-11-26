@@ -32,6 +32,7 @@ struct NSPPackage: Codable, Identifiable {
 struct OnlinePreparation: Codable {
     var version: String?
     var issues: [String]
+    var patchFree: Bool?
 }
 
 struct Game: Codable, Identifiable {

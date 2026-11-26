@@ -8,6 +8,7 @@ from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'Worker'));sys.path.insert(0,str(ROOT/'scripts'))
 from core import Context, Failure, atomic
 import build, fetch_online_engine, online
+import mario_kart_world as mkw
 from incremental import workspace
 GAME='0100C2500FC20000'
 
@@ -48,6 +49,47 @@ class OnlineTests(unittest.TestCase):
         self.assertEqual(online_preparation(game,profile,True),{'version':'12.0.0','issues':[]})
         self.assertIsNone(online_preparation(game,profile|{'builds':{'v0':{'display':'1.0.0'}}},True)['version'])
         self.assertTrue(online_preparation(game|{'packages':[]},profile,True)['issues'])
+    def test_mario_kart_world_update_selects_its_own_shader_profile_and_exact_build(self):
+        from derived import plan, supported
+        from core import profiles
+        from library import online_preparation
+        engine=ROOT/'Engine/nxnative'
+        profile=profiles(engine)[mkw.TITLE]
+        self.assertTrue(supported(engine,registered_update=True))
+        base={'type':'base','version':0,'builds':{'main':'base'}}
+        update={'type':'update','version':917504,'builds':profile['builds'][mkw.INTERNAL]}
+        game={'id':mkw.TITLE,'sourceKind':'nup','packages':[base,update]}
+        self.assertEqual(plan(game,profile),{'mode':'derived','version':mkw.INTERNAL,'versions':[mkw.INTERNAL]})
+        self.assertEqual(online_preparation(game,profile,False),{'version':mkw.RETAIL,'issues':[],'patchFree':True})
+        self.assertEqual(plan(game|{'packages':[base]},profile)['version'],'v0')
+        self.assertTrue(online_preparation(game|{'packages':[base,update|{'builds':{'main':'wrong'}}]},profile,False)['issues'])
+        main=self.root/'main'
+        main.write_bytes(b'NSO0'+bytes(0x3c)+mkw.FULL_MAIN)
+        mkw.verify_main(main)
+        main.write_bytes(b'NSO0'+bytes(0x3c)+mkw.FULL_MAIN[:-1]+b'\x01')
+        with self.assertRaises(Failure): mkw.verify_main(main)
+
+    def test_patch_free_install_does_not_copy_a_stale_variant(self):
+        stale=self.root/'nextendo-modules/nextendo'
+        stale.mkdir(parents=True)
+        (stale/'main.fixups.tsv').write_text('stale adapter')
+        (self.root/'nextendo-services').mkdir()
+        stage=self.root/'stage'
+        stage.mkdir()
+        online.install(self.root,stage,mkw.RETAIL,'Mario Kart World',patch_free=True)
+        self.assertTrue((stage/'online').is_dir())
+        self.assertFalse((stage/'modules/nextendo').exists())
+
+    def test_patch_free_build_requires_launcher_configuration_check(self):
+        c=self.context(network='nextendo',onlineEngineDir=str(self.engine))
+        c.library=self.root/'library'
+        c.game=lambda:{'id':mkw.TITLE,'sourceKind':'nup','packages':[{'type':'update','version':917504}]}
+        prepared=(self.root,self.engine,{},SimpleNamespace(),SimpleNamespace(), 'fixture')
+        with redirect_stdout(StringIO()),patch('build.prepare',return_value=prepared),patch('online.game_catalog') as catalog:
+            with self.assertRaisesRegex(Failure,'验证 Mario Kart World'):
+                build.build(c)
+        catalog.assert_not_called()
+
     def test_unlisted_online_game_is_rejected_before_reading_sources(self):
         title = '0400C3F00006E000'
         c = self.context(network='nextendo', onlineEngineDir=str(self.engine))

@@ -46,6 +46,9 @@ private actor RenewalHTTP: NextendoHTTPClient {
     func held() -> Bool { continuation != nil }
     func release() { continuation?.resume(); continuation = nil }
     func paths() -> [String] { requests.map { $0.url!.path } }
+    func networkHeaders() -> [String?] {
+        [requests.last?.value(forHTTPHeaderField:"Authorization"),requests.last?.value(forHTTPHeaderField:"X-Nextendo-Client-Id")]
+    }
     func form() -> [String:String] {
         guard let data = requests.first?.httpBody, let text = String(data:data,encoding:.utf8),
               let query = URLComponents(string: "https://fixture.invalid/?" + text) else { return [:] }
@@ -89,6 +92,27 @@ private actor LeaseState {
             try await Task.sleep(for:.milliseconds(1))
         }
     }
+    func testNetworkConfigurationUsesRegisteredApplicationOAuthGrant() async throws {
+        let store=RenewalStore(session(accessExpired:false,proofExpired:false))
+        let http=RenewalHTTP([try response(["provider":"fixture"])])
+        try await service(store,http).verifyDeveloperNetworkConfiguration()
+        let paths=await http.paths(), headers=await http.networkHeaders()
+        XCTAssertEqual(paths,["/api/developers/network-config"])
+        XCTAssertEqual(headers,["Bearer synthetic-access-old","nxnative-own-test-client"])
+        XCTAssertEqual(store.count(),0)
+    }
+
+    func testNetworkConfigurationRefusesUnauthorizedApplication() async throws {
+        let store=RenewalStore(session(accessExpired:false,proofExpired:false))
+        let http=RenewalHTTP([try response(["error":"OAuth required"],status:401)])
+        do {
+            try await service(store,http).verifyDeveloperNetworkConfiguration()
+            XCTFail("An unauthorized application cannot prepare patch-free online play")
+        } catch {
+            XCTAssertEqual(error as? NextendoError,.httpStatus(401))
+        }
+    }
+
     func testConcurrentPreparationRotatesOnceAndUsesTheDocumentedGrant() async throws {
         let store = RenewalStore(session()), http = RenewalHTTP(try replies(),hold:0), service = service(store,http)
         let workers = (0..<12).map { _ in Task { try await service.prepareGameAccount() } }

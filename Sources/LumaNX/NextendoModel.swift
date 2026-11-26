@@ -21,6 +21,12 @@ import SwiftUI
     static func validClientID(_ id: String) -> Bool {
         id.range(of: "^nxc_[A-Za-z0-9_-]{3,128}$", options: .regularExpression) != nil
     }
+    func verifyDeveloperNetworkConfiguration() async throws {
+        guard !busy else { throw NextendoError.authorizationUnavailable }
+        busy = true
+        defer { busy = false }
+        try await service.verifyDeveloperNetworkConfiguration()
+    }
     /// A nil credential means there is no signed-in account. Renewal failures
     /// are reported to the caller so it can distinguish them from sign-out.
     func gameLaunchCredential() async throws -> Data? {
@@ -103,15 +109,21 @@ struct NextendoPreparationStatus {
     let game: Game
     let catalog: NextendoCatalogSnapshot?
 
-    var targetVersion: String? { row == nil ? nil : game.onlinePreparation?.version }
+    var patchFree: Bool {
+        game.id == "0400C3F00006E000" && game.onlinePreparation?.patchFree == true && game.onlinePreparation?.version == "1.8.0"
+    }
+    var targetVersion: String? { row != nil || patchFree ? game.onlinePreparation?.version : nil }
     var eligibility: NextendoGameEligibility {
-        catalog?.evaluate(titleID:game.id,installedVersion:game.onlinePreparation?.version) ?? .catalogUnavailable
+        let result = catalog?.evaluate(titleID:game.id,installedVersion:game.onlinePreparation?.version) ?? .catalogUnavailable
+        if patchFree && [.notListed,.catalogUnavailable,.catalogExpired].contains(result) { return .accepted }
+        return result
     }
     private var row: NextendoGamePolicy? {
         guard catalog?.freshness() == .fresh else { return nil }
         return catalog?.catalog?.games.first { $0.titleIDs.contains(game.id.lowercased()) }
     }
     var acceptedVersions: [String] {
+        if patchFree && row == nil { return ["1.8.0"] }
         guard let row, case .exact(let versions) = row.versionPolicy else { return [] }
         return versions
     }
@@ -121,11 +133,13 @@ struct NextendoPreparationStatus {
         }
     }
     var installedVersion: String? {
-        guard row != nil, game.ready == true else { return nil }
+        guard row != nil || patchFree, game.ready == true else { return nil }
         return installedRetailVersion ?? game.runtimeVersionLabel
     }
     var installedVersionNotAccepted: Bool {
-        guard game.ready == true, let installedRetailVersion, let row else { return false }
+        guard game.ready == true, let installedRetailVersion else { return false }
+        if patchFree && row == nil { return installedRetailVersion != "1.8.0" }
+        guard let row else { return false }
         if case .versionNotAccepted = row.evaluate(installedVersion:installedRetailVersion) { return true }
         return false
     }

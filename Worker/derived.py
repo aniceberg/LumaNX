@@ -7,6 +7,7 @@ import re
 import sys
 from pathlib import Path
 from core import Failure, atomic, chain_of, digest
+import mario_kart_world as mkw
 
 REQUIRED = {'derive_profile','provisional_prep','refine_after_rewrite','split_shaders',
             'build_shaders','chain_tables','set_keys','capture_shaders','decode_ue_shaders'}
@@ -14,19 +15,24 @@ TABLES = ('shader_map.tsv','shader_facts.tsv','shader_pairs.tsv')
 PROFILE_STAGE = '生成版本配置'
 
 
-def supported(engine):
+def supported(engine, *, registered_update=False):
     if engine is None: return False
     root=Path(engine)
     try:
         tree=ast.parse((root/'scripts/build_ipa_from_nsp.py').read_text())
         functions={n.name:n for n in tree.body if isinstance(n,ast.FunctionDef)}
-        return REQUIRED<=functions.keys() and 'provisional' in [a.arg for a in functions['split_shaders'].args.args] and all(
+        required = REQUIRED
+        if registered_update and 'refine_after_rewrite' not in functions:
+            required = REQUIRED-{'refine_after_rewrite'}|{'region_check','region_checked','apple_silicon'}
+        return required<=functions.keys() and 'provisional' in [a.arg for a in functions['split_shaders'].args.args] and all(
             (root/p).is_file() for p in ('dm/games/profile_guess.py','dm/tools/nacp.py',
                 'dm/gfx/tools/own_compilers.py','dm/gfx/tools/cb_extent.py'))
     except (OSError,SyntaxError): return False
 
 
 def plan(game, profile, enabled=False):
+    if mkw.update_selected(game):
+        return dict(mode='derived',version=mkw.INTERNAL,versions=[mkw.INTERNAL])
     if game.get('sourceKind') in ('dump','nup'): enabled=False
     packages=[p for p in game['packages'] if p['type'] in ('base','update')]
     selected=max(packages,key=lambda p:p['version'],default=None) if enabled else None
@@ -90,6 +96,15 @@ def prepare_profile(c, st, up, registered, root, repo, env, selected, version):
     st.run(PROFILE_STAGE,[folder],lambda:up.derive_profile(registered,folder,version,selected,
         registered.words('modules')),milestone='profile')
     gp=type(registered)(folder)
+    if gp.id==mkw.TITLE and version==mkw.INTERNAL and gp.builds()[version]['display'] != mkw.RETAIL:
+        def fix_version(rows):
+            for index,row in enumerate(rows):
+                fields=row.split('\t')
+                if fields[:2]==['build',version]:
+                    fields[2]=mkw.RETAIL
+                    rows[index]='\t'.join(fields)
+            return rows
+        gp=up.set_keys(gp,{},'Mario Kart World version',edit=fix_version)
     env.update(DM_GAMES_DIR=str(folder.parent),DM_GAMES_FIRST='1')
     up.provisional_prep(sys.executable,repo,env,root/'logs',gp)
     sources=up.pg.build_sources(selected/'ExeFS',romfs_source(selected),gp.words('modules'))
@@ -103,6 +118,18 @@ def prepare_profile(c, st, up, registered, root, repo, env, selected, version):
     return gp,sources
 
 
+def refine_profile(st, up, repo, root, env, gp, selected, patched):
+    if hasattr(up,'refine_after_rewrite'):
+        gp=up.refine_after_rewrite(gp,selected,patched)
+    elif (gp.id==mkw.TITLE and gp.get('package')==mkw.INTERNAL
+          and up.HEAP_CHECK and up.pg.has_va(selected/'ExeFS')
+          and not up.region_checked(gp,patched) and up.apple_silicon()):
+        # The bundled engine still runs this step inline in its packer.
+        gp=up.region_check(repo,selected,patched,root,env,root/'logs',gp)
+    seal_profile(st,gp)
+    return gp
+
+
 def seal_profile(st,gp):
     # The upstream refinement may update game.tsv; generated shader tables have
     # their own checkpoints and must not make the profile stage discard them.
@@ -111,7 +138,7 @@ def seal_profile(st,gp):
     atomic(st.file,st.saved)
 
 
-def shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources,target):
+def shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources,target,reuse=None):
     if st.graph: st.graph.decoder=any(sources.get(k,(False,))[0] for k in ('oodle_packs','ue_legacy'))
     logs=root/'logs';sh=root/'shader';sh.mkdir(exist_ok=True)
     graphics=sources['graphics'][0]
@@ -139,6 +166,8 @@ def shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources,target):
         st.run('提取并核对着色器',[sh/'pkg',*[gp.table(t) for t in TABLES]],lambda:up.split_shaders(
             sys.executable,repo,[romfs_source(d) for d in dirs.values()],[d/'ExeFS/main' for d in dirs.values()],
             sh/'pkg',env,logs,gp,provisional=True,oodle=oodle,**addons),milestone='extract')
+        if reuse and (shared := reuse()):
+            return sh,shared
         outputs=[sh/'cache',gp.table('c1_full.tsv'),gp.table('cb_extent.tsv')]+([sh/'ios'] if target=='ios' else [])
         def nvn():
             up.build_shaders(sys.executable,repo,sh,repo/'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate',env,logs,gp,mac=target=='macos')
@@ -148,7 +177,7 @@ def shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources,target):
                 validate_shaders(sh/'ios',gp,repo)
         st.run('转换并编译 Metal 着色器',outputs,nvn,milestone='shaders')
         validate_tables(sh/'cache',gp,chain_of(repo,gp))
-    return sh
+    return sh,None
 
 
 def validate_tables(cache,gp,chain):

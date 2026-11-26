@@ -302,7 +302,30 @@ final class WorkerOutput: @unchecked Sendable {
             return
         }
         selection="tasks"
-        executionTask=worker("build",extra:onlineRequest.merging(["gameId":game.id]) {$1}) { _ in self.notice="游戏已准备完成，可以启动。" }
+        startOnlinePreparation(game)
+    }
+    private func startOnlinePreparation(_ game: Game) {
+        var request=onlineRequest.merging(["gameId":game.id]) {$1}
+        guard NextendoPreparationStatus(game:game,catalog:nextendoCatalogSnapshot).patchFree else {
+            executionTask=worker("build",extra:request) { _ in self.notice="游戏已准备完成，可以启动。" }
+            return
+        }
+        let library=preferences.library
+        let engine=preferences.onlineEngineDir
+        checkingLaunchAccount=true
+        Task {
+            defer { startNext() }
+            do { try await nextendo.verifyDeveloperNetworkConfiguration() }
+            catch {
+                checkingLaunchAccount=false
+                self.error=NextendoModel.describe(error)
+                return
+            }
+            checkingLaunchAccount=false
+            guard !executionBusy, library==preferences.library, engine==preferences.onlineEngineDir else { return }
+            request["nextendoNetworkConfigVerified"]=true
+            executionTask=worker("build",extra:request) { _ in self.notice="游戏已准备完成，可以启动。" }
+        }
     }
     func launchOnline(_ game: Game, offlineWhenSignedOut: Bool = false) {
         guard !executionBusy, queue.isEmpty, runtimeReady else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
@@ -705,10 +728,9 @@ final class WorkerOutput: @unchecked Sendable {
         let libraryId = preferences.libraryId
         switch mode {
         case .nextendo(let engine):
-            guard engine == preferences.onlineEngineDir else { startNext(); return }
-            executionTask = worker("build",extra:onlineRequest.merging(["gameId":id]) {$1}) { _ in
-                self.notice = "游戏已准备完成，可以启动。"
-            }
+            guard engine == preferences.onlineEngineDir, let game = games.first(where:{$0.id==id})
+            else { startNext(); return }
+            startOnlinePreparation(game)
         case .offline, .offlineThenNextendo:
             var request: [String:Any] = ["gameId":id]
             if case .offlineThenNextendo = mode { request["prepareNextendoAfterBuild"] = true }

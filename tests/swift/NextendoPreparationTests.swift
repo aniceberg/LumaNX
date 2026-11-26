@@ -67,4 +67,13 @@ final class NextendoPreparationTests: XCTestCase {
             XCTAssertTrue(status.acceptedVersions.isEmpty)
         }
     }
+    func testPatchFreeMarioKartWorldIsEligibleWithoutAnEntryInThePatchCatalog() {
+        var game=fixture(target:"1.8.0")
+        game.id="0400C3F00006E000"
+        game.onlinePreparation?.patchFree=true
+        let status=NextendoPreparationStatus(game:game,catalog:catalog())
+        XCTAssertTrue(status.canPrepare)
+        XCTAssertEqual(status.acceptedVersions,["1.8.0"])
+        XCTAssertEqual(status.targetVersion,"1.8.0")
+    }
 }

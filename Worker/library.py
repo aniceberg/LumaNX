@@ -3,6 +3,7 @@ import json, os, re, shutil, subprocess, tempfile, time, uuid, zipfile
 from pathlib import Path
 from core import *
 import managed_sources
+import mario_kart_world as mkw
 
 def setup(c):
     c.begin('创建游戏库',1,1)
@@ -55,6 +56,10 @@ def requirements(g,p,derived_profiles=False):
     if g.get('sourceKind') in ('dump','nup'): derived_profiles=False
     if derived_profiles and any(x['type']=='base' and x['version']==0 for x in g['packages']): return []
     packages=g['packages']; need=([] if g.get('sourceKind')=='nup' else ['v0'])+list(dict.fromkeys([p['package']]+p.get('shader_versions',p['package']).split()))
+    if mkw.update_selected(g):
+        if p['builds'].get(mkw.INTERNAL, {}).get('main') != mkw.MAIN:
+            return ['当前引擎缺少 Mario Kart World 1.8.0 配置。']
+        need=[mkw.INTERNAL]
     have={f"v{x['version']}" for x in packages if x['type'] in ('base','update')}
     missing=['缺少本体 v0' if v=='v0' else f'缺少更新 {v}（{p["builds"].get(v,{}).get("display","配置指定版本")}）' for v in need if v not in have]
     for x in packages:
@@ -124,7 +129,7 @@ def scan_import(c):
                         newest = max((p for p in packages if p['type'] != 'dlc'), key=lambda p: p['version'])
                         newest['display'] = display
                 entry['title'] = name or profile['name']
-                entry['requirements'] = requirements(dict(sourceKind='nup', packages=packages), profile)
+                entry['requirements'] = requirements(dict(id=profile['id'], sourceKind='nup', packages=packages), profile)
             elif folder:
                 _, profile, packages = dump.scan(c, path)
                 entry['title'] = profile['name']
@@ -285,8 +290,12 @@ def online_preparation(game, profile, dynamic):
         return {'issues':issues}
     strategy = plan(game, profile, dynamic)
     # The derived profile reads the merged game's control metadata during extraction.
-    version = profile['builds'].get(strategy['version'], {}).get('display') if strategy['mode'] == 'registered' else None
-    return {'version':version, 'issues':issues}
+    patch_free = mkw.update_selected(game) and not issues
+    version = (mkw.RETAIL if patch_free else
+               profile['builds'].get(strategy['version'], {}).get('display') if strategy['mode'] == 'registered' else None)
+    result = {'version':version, 'issues':issues}
+    if patch_free: result['patchFree']=True
+    return result
 
 
 def catalog(c):

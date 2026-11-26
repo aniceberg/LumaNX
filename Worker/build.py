@@ -8,6 +8,7 @@ from library import requirements, inspect
 import milestones as ms
 import online
 import managed_sources
+import mario_kart_world as mkw
 from shader_artifacts import generate_tables, validate_library
 
 class ShaderProgress:
@@ -213,8 +214,10 @@ def prepare(c,g,target='macos'):
     dynamic=info.get('derivedProfiles',False) and getattr(c,'r',{}).get('operation')!='migrate'
     ps=profiles(c.engine); profile=ps.get(g['id']); missing=requirements(g,profile,dynamic)
     if missing: raise Failure('；'.join(missing))
-    from derived import plan
+    from derived import plan, supported
     strategy=plan(g,profile,dynamic)
+    if mkw.update_selected(g) and not supported(c.engine,registered_update=True):
+        raise Failure('当前引擎缺少 Mario Kart World 1.8.0 配置。')
     from incremental import Graph, engine_matches, legacy_keys, pipeline_version, workspace
     tc=tools(c,target); identity={'tools':tc,'sources':sorted(x['sha256'] for x in g['packages']),'game':g['id'],'target':target,'schema':3,'preparation':strategy,'pipeline':pipeline_version(target)}
     key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()[:24]
@@ -326,7 +329,9 @@ def install(c,root,repo,gp,key,host,romfs,modules,shader,aoc=None,font=None,shar
     if Path(romfs).is_file(): clone(romfs,stage/'romfs.img',c.progress)
     else: cp(romfs,'romfs')
     cp(modules,'modules')
-    if online.enabled(c): online.install(root,stage,gp.builds()[gp.get('package')]['display'],gp.get('name') or gp.id)
+    mkw_update = gp.id==mkw.TITLE and gp.get('package')==mkw.INTERNAL
+    if online.enabled(c):
+        online.install(root,stage,gp.builds()[gp.get('package')]['display'],gp.get('name') or gp.id,patch_free=mkw_update)
     cp(aoc,'aoc')
     from runtime_payload import copy_shaders
     loose=online.enabled(c) and not online.reads_images(repo)
@@ -360,6 +365,8 @@ def install(c,root,repo,gp,key,host,romfs,modules,shader,aoc=None,font=None,shar
         c.run([sys.executable,repo/'dm/tools/make_ext_font.py',stage/'font/nintendo_ext.ttf'],root/'logs/font.log',c.env(gp.id,root))
     manifest={'schema':1,'gameId':gp.id,'engine':read(root/'identity.json',{}).get('tools',{}).get('engine','external'),'cacheKey':key,'sourceHashes':read(root/'identity.json',{}).get('sources',[]),'chain':chain,'graphics':gp.get('graphics','nvn'),'version':gp.builds()[gp.get('package')]['display'],'inputConfig':read(root/'identity.json',{}).get('tools',{}).get('inputConfig',False),'created':time.time(),'preparationMode':'derived' if own else 'registered','pipeline':read(root/'identity.json',{}).get('pipeline')}
     manifest.update(release_version_fields(c.game()['packages'], gp.get('package'), manifest['version']))
+    if mkw_update:
+        manifest.update(retailVersion=mkw.RETAIL,retailVersionSource='profile')
     from incremental import runtime_inventory
     from compressed_assets import host_supports
     capable=host_supports(stage/'dmhost')
@@ -432,7 +439,12 @@ def build(c,target='macos'):
         logs=root/'logs'; logs.mkdir(exist_ok=True); st=Stages(c,root,getattr(c,'buildGraph',None),getattr(c,'legacyStageInputs',None))
         strategy=read(root/'identity.json',{}).get('preparation',{})
         own=strategy.get('mode')=='derived'
-        if online.enabled(c):
+        patch_free=online.enabled(c) and mkw.update_selected(g)
+        if patch_free:
+            if c.r.get('nextendoNetworkConfigVerified') is not True:
+                raise Failure('请在 LumaNX 中登录 Nextendo 并验证 Mario Kart World 联机配置。')
+            row={'protocol':'npln'}
+        elif online.enabled(c):
             c.begin('验证 Nextendo 游戏目录')
             catalog=online.game_catalog(repo,root)
             version=None if own else gp.builds()[gp.get('package')]['display']
@@ -481,6 +493,8 @@ def build(c,target='macos'):
                 st.run('解包与合并 '+ver,[d],lambda ver=ver,upd=upd: up.extract(c.nx(),c.keys,root/'extract',ver,source_paths[base['path']],upd,*tail,**extraction),milestone=f'unpack-{index}')
         if own:
             import derived
+            if mkw.update_selected(g):
+                mkw.verify_main(dirs[strategy['version']]/'ExeFS/main')
             gp,sources_info=derived.prepare_profile(c,st,up,gp,root,repo,env,dirs[strategy['version']],strategy['version'])
             if st.graph: st.graph.profile=gp
             c.emit('message','按实际游戏版本生成配置与着色器；可玩性仍需验证。')
@@ -508,24 +522,27 @@ def build(c,target='macos'):
             env = dict(env, DM_NRO_DIR=str(nro_dir))
         if online.enabled(c):
             c.begin('准备 Nextendo 联机组件')
-            if own:
+            if patch_free:
+                version=mkw.RETAIL
+            elif own:
                 version=gp.builds()[gp.get('package')]['display']
                 row=online.policy(catalog,gp.id,version)
             online.services(c,repo,root,gp,version,row)
-            online.variant(c,up,repo,root,selected,env,gp,row.get('protocol'))
-        shared=online.reusable_shaders(c,repo,g,gp,env) if target=='macos' else None
+            if not patch_free: online.variant(c,up,repo,root,selected,env,gp,row.get('protocol'))
+        reuse=(lambda:online.reusable_shaders(c,repo,g,gp,env)) if target=='macos' else None
+        shared=reuse() if reuse and not own else None
+        if own:
+            gp=derived.refine_profile(st,up,repo,root,env,gp,selected,patched)
+            if st.graph: st.graph.profile=gp
+            sh,shared=derived.shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources_info,target,reuse)
         if shared:
-            sh=root/'shader'
+            if not own: sh=root/'shader'
             for milestone in ('capture_gl','capture_vk','extract','shaders'):
                 if any(item['id']==milestone for item in c.milestones):
                     ms.enter(c,milestone)
                     ms.cached(c)
             c.emit('cache','已复用经过校验的着色器，无需重新编译。',done=1,total=1)
-        elif own:
-            gp=up.refine_after_rewrite(gp,selected,patched);derived.seal_profile(st,gp)
-            if st.graph: st.graph.profile=gp
-            sh=derived.shaders(c,st,up,repo,root,env,gp,selected,patched,dirs,sources_info,target)
-        else:
+        elif not own:
             if capture_gl: st.run('采集运行时 GLSLC 着色器',[selected/'glslc_capture'],lambda:up.capture_glslc(repo,dirs,gp.get('package'),patched,root,env,logs,gp),milestone='capture_gl')
             if capture_vk: st.run('采集运行时 Vulkan 着色器',[selected/'vk_capture'],lambda:up.capture_vk(repo,selected,patched,root,env,logs,gp) if hasattr(up,'capture_vk') else up.capture_shaders(repo,selected,patched,root,env,logs,gp,'vk'),milestone='capture_vk')
             sh=root/'shader'; sh.mkdir(exist_ok=True)

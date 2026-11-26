@@ -3840,6 +3840,18 @@
     "en": "Prepare Nextendo online play"
   },
   {
+    "source": "当前引擎缺少 Mario Kart World 1.8.0 配置。",
+    "en": "This engine is missing the Mario Kart World 1.8.0 preparation profile."
+  },
+  {
+    "source": "Mario Kart World 的 1.8.0 构建标识不匹配。",
+    "en": "The Mario Kart World executable does not match the registered 1.8.0 build."
+  },
+  {
+    "source": "请在 LumaNX 中登录 Nextendo 并验证 Mario Kart World 联机配置。",
+    "en": "Sign in to Nextendo in LumaNX to verify the Mario Kart World network configuration."
+  },
+  {
     "source": "导入所选内容",
     "en": "Import selected"
   },
