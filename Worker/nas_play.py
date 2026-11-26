@@ -10,6 +10,7 @@ import uuid
 from core import Failure, atomic, clone, contained, read
 from recovery import game_root, inventory
 from runtime_archive import _copy, _space
+import managed_sources
 
 
 
@@ -28,30 +29,62 @@ def inventory_progress(c, expected=None, offset=0):
 
     return report
 
+def share_folder(c, chosen):
+    if not isinstance(chosen, str) or not chosen:
+        raise Failure('Choose a mounted NAS folder.')
+    share = Path(chosen).expanduser()
+    if share.is_symlink() or not share.is_dir():
+        raise Failure('Choose a mounted NAS folder.')
+    share = share.resolve(strict=True)
+    library = c.library.resolve()
+    if library == share or library in share.parents or share in library.parents:
+        raise Failure('Choose a NAS folder outside the local LumaNX library.')
+    return share
+
+
+def finish_publish(c, catalog, candidates, current, source):
+    c.begin('Release local compiled game space', 4, 4)
+    managed_sources.remove_local_copies(c, catalog, candidates)
+    if current.is_symlink():
+        if current.resolve() != source:
+            raise Failure('The active runtime changed. The local runtime was kept.')
+        current.unlink()
+    if source.is_dir():
+        shutil.rmtree(source)
+
+
 def publish(c):
     from build import validate_runtime
 
     with c.lock('execution'), c.lock():
-        game = c.game()
+        catalog = c.catalog()
+        game = next((row for row in catalog['games'] if row['id'] == c.r.get('gameId')), None)
+        if game is None: raise Failure('游戏未登记在当前游戏库中。')
         local = game_root(c, 'games', game['id'])
         current = local / 'current'
+        share = share_folder(c, c.r.get('archiveRoot'))
+        include_sources = c.r.get('includeManagedSources') is True
+
+        c.job['archiveRoot'] = str(share)
+        c.job['includeManagedSources'] = include_sources
+        atomic(c.jobpath, c.job)
+        prior = game.get('nasRuntime', {})
+        old_release = prior.get('localRelease')
+        if (old_release and Path(old_release).name == old_release
+                and Path(prior['path']).parent.parent == share):
+            pending = contained(local/'releases', local/'releases'/old_release)
+            if (not current.exists() and not current.is_symlink()) or current.resolve() == pending:
+                remote, _, _ = authenticated_runtime(prior)
+                candidates = move_sources(c, game, share) if include_sources else {}
+                c.check()
+                c.save_catalog(catalog)
+                finish_publish(c, catalog, candidates, current, pending)
+                return {'path': str(remote), 'savesKeptLocal': True}
         if not current.is_symlink() or not current.exists():
             raise Failure('Prepare a local runtime before publishing it to the NAS.')
         source = contained(local / 'releases', current.resolve(strict=True))
         validate_runtime(source)
-        chosen = c.r.get('archiveRoot')
-        if not isinstance(chosen, str) or not chosen:
-            raise Failure('Choose a mounted NAS folder.')
-        share = Path(chosen).expanduser()
-        if share.is_symlink() or not share.is_dir():
-            raise Failure('Choose a mounted NAS folder.')
-        share = share.resolve(strict=True)
-        library = c.library.resolve()
-        if library == share or library in share.parents or share in library.parents:
-            raise Failure('Choose a NAS folder outside the local LumaNX library.')
-
-        c.job['archiveRoot'] = str(share)
-        atomic(c.jobpath, c.job)
+        candidates = move_sources(c, game, share) if include_sources else {}
         identifier = uuid.uuid4().hex
         destination = share / game['id']
         if destination.is_symlink():
@@ -83,23 +116,39 @@ def publish(c):
             staging.rename(remote)
 
         manifest = read(source / 'manifest.json')
-        entry = dict(id=identifier, path=str(remote), manifestHash=expected['files']['manifest.json']['sha256'],
+        entry = dict(id=identifier, path=str(remote), localRelease=source.name, manifestHash=expected['files']['manifest.json']['sha256'],
                      version=manifest['version'], assetCompression=bool(manifest.get('assetCompression')),
                      inputConfig=manifest.get('inputConfig', True))
         if not manifest.get('artifacts'):
             entry['artifactInventory'] = expected
         entry.update({key: manifest[key] for key in ('internalVersion', 'retailVersion', 'retailVersionSource') if key in manifest})
-        catalog = c.catalog()
-        next(item for item in catalog['games'] if item['id'] == game['id'])['nasRuntime'] = entry
+        game['nasRuntime'] = entry
+        c.check()
         c.save_catalog(catalog)
-        c.begin('Release local compiled game space', 4, 4)
-        if current.resolve() != source:
-            raise Failure('The active runtime changed. The local runtime was kept.')
-        # The verified NAS path is already registered if an interruption occurs
-        # after unlinking current. An older release is never removed here.
-        current.unlink()
-        shutil.rmtree(source)
+        finish_publish(c, catalog, candidates, current, source)
         return {'path': str(remote), 'savesKeptLocal': True}
+
+
+def move_sources(c, game, share):
+    c.begin('Copy and verify managed sources on the NAS')
+    return managed_sources.publish(c, game, share)
+
+
+def publish_sources(c):
+    with c.lock('execution'), c.lock():
+        catalog = c.catalog()
+        game = next((row for row in catalog['games'] if row['id'] == c.r.get('gameId')), None)
+        if not game or not game.get('nasRuntime'):
+            raise Failure('Move the playable runtime to the NAS first.')
+        remote, _, manifest = authenticated_runtime(game['nasRuntime'])
+        if manifest.get('gameId') != game['id']:
+            raise Failure('The playable NAS runtime belongs to another game.')
+        share = share_folder(c, str(remote.parent.parent))
+        candidates = move_sources(c, game, share)
+        c.check()
+        c.save_catalog(catalog)
+        managed_sources.remove_local_copies(c, catalog, candidates)
+        return {'path': str(share/'managed-sources'/game['id'])}
 
 
 def launch_paths(c, game, current):

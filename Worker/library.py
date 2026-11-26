@@ -2,6 +2,7 @@ from __future__ import annotations
 import json, os, re, shutil, subprocess, tempfile, time, uuid, zipfile
 from pathlib import Path
 from core import *
+import managed_sources
 
 def setup(c):
     c.begin('创建游戏库',1,1)
@@ -34,7 +35,7 @@ def keys(c):
     try:
         packages=[p for g in c.catalog()['games'] for p in g['packages'] if p.get('sourceKind') not in ('dump','nup')]
         if packages:
-            inspect(c,c.library/packages[0]['path'],candidate); verified=True
+            inspect(c,managed_sources.resolve(c,packages[0]),candidate); verified=True
         os.replace(candidate,c.keys); os.chmod(c.keys,0o600)
     finally:
         candidate.unlink(missing_ok=True)
@@ -198,8 +199,20 @@ def import_containers(c, files, *, unhide=True, expected_hashes=None):
                 duplicate=bool(previous) and old_ids==new_ids
                 # A merged container is copied once; every logical package points at it.
                 first=packages[0]
-                dest=contained(c.library,c.library/previous[0]['path']) if previous else c.library/'sources'/first['baseId']/f'{first["titleId"]}_v{first["version"]}_{sha[:12]}{src.suffix.lower()}'
-                if not dest.is_file() or dest.resolve()!=src.resolve():
+                dest=managed_sources.local_path(c,previous[0]) if previous else c.library/'sources'/first['baseId']/f'{first["titleId"]}_v{first["version"]}_{sha[:12]}{src.suffix.lower()}'
+                nas_location=None
+                for old in previous:
+                    if not old.get('nasSource'): continue
+                    try:
+                        registered=managed_sources.resolve(c,old)
+                        if registered != src.resolve():
+                            managed_sources.verify(c,old,registered,c.progress)
+                        nas_location=old['nasSource']
+                        dest=managed_sources.local_path(c,old)
+                        break
+                    except (Failure,OSError):
+                        continue
+                if nas_location is None and (not dest.is_file() or dest.resolve()!=src.resolve()):
                     free=shutil.disk_usage(c.library).free
                     reserve=512*2**20 if src.stat().st_dev==c.library.stat().st_dev else src.stat().st_size+512*2**20
                     if free<reserve: raise Failure('游戏库可用空间不足，复制尚未开始。')
@@ -219,7 +232,9 @@ def import_containers(c, files, *, unhide=True, expected_hashes=None):
                         g={'id':tid,'name':package.get('name') or ps.get(tid,{}).get('name',tid),'display':'','packages':[],'hidden':False}; cat['games'].append(g)
                     if unhide: g['hidden']=False
                     g.pop('sourceKind',None)
-                    g['packages'].append(package|{'path':str(dest.relative_to(c.library)),'size':dest.stat().st_size,'sha256':sha,'metadataSchema':metadata_schema})
+                    record=package|{'path':str(dest.relative_to(c.library)),'size':src.stat().st_size,'sha256':sha,'metadataSchema':metadata_schema}
+                    if nas_location: record['nasSource']=nas_location
+                    g['packages'].append(record)
                     if package.get('name'): g['name']=package['name']
                     selected=max((p for p in g['packages'] if p['type'] in ('base','update')),key=lambda p:p['version'],default={})
                     g['display']=selected.get('display','')
@@ -236,15 +251,16 @@ def import_containers(c, files, *, unhide=True, expected_hashes=None):
 def refresh_container_metadata(c):
     # Upgrade already imported merged files once the new private reader is ready.
     cat=c.catalog()
-    pending={p['path']:p['sha256'] for g in cat['games'] for p in g['packages'] if p.get('metadataSchema',0)<2 and not g.get('hidden')}
+    pending={p['path']:p for g in cat['games'] for p in g['packages'] if p.get('metadataSchema',0)<2 and not g.get('hidden')}
     if not pending or not c.keys.is_file(): return
     try: c.nx()
     except Failure: return
     for path in sorted(pending):
         try:
-            source=contained(c.library,c.library/path)
-            if source.is_file(): import_containers(c,[source],unhide=False,expected_hashes={str(source):pending[path]})
-        except Failure:
+            package=pending[path]
+            source=managed_sources.resolve(c,package)
+            if source.is_file(): import_containers(c,[source],unhide=False,expected_hashes={str(source):package['sha256']})
+        except (Failure,OSError):
             # Keep the last successful catalogue when a disk/key is unavailable.
             continue
 
@@ -260,6 +276,19 @@ def key_status(c):
     verified=status.get('verified') is True
     return {'ready':True,'entries':count,'verified':verified,'message':'已验证解密能力' if verified else '格式通过，首次导入游戏时验证解密能力'}
 
+def online_preparation(game, profile, dynamic):
+    from derived import plan
+    issues = requirements(game, profile, dynamic)
+    if not game['packages']:
+        issues = ['添加 Nextendo 支持前，请先导入此游戏的源文件。']
+    if not profile:
+        return {'issues':issues}
+    strategy = plan(game, profile, dynamic)
+    # The derived profile reads the merged game's control metadata during extraction.
+    version = profile['builds'].get(strategy['version'], {}).get('display') if strategy['mode'] == 'registered' else None
+    return {'version':version, 'issues':issues}
+
+
 def catalog(c):
     from engine import inspect_source
     try: selected_engine = inspect_source(c)
@@ -267,18 +296,31 @@ def catalog(c):
     if selected_engine: refresh_container_metadata(c)
     c.begin('读取游戏库',1,1); cat=c.catalog(); ps=profiles(c.engine) if selected_engine else {}
     from incremental import pipeline_version
+    from derived import plan, supported
+    from online import select_engine
+    try:
+        online_engine = select_engine(c.r)
+        online_profiles = profiles(online_engine)
+        online_dynamic = supported(online_engine)
+        online_engine_issue = None
+    except (Failure, OSError, ValueError, IndexError) as error:
+        online_profiles, online_dynamic = {}, False
+        online_engine_issue = str(error) if isinstance(error, Failure) else '所选联机引擎不可用，请在设置中重新选择。'
     pipeline=pipeline_version()
     for g in cat['games']:
         g['buildMissing']=requirements(g,ps.get(g['id']),bool(selected_engine and selected_engine.get('derivedProfiles')))
         g['missing']=list(g['buildMissing']); g['compatibility']=ps.get(g['id'],{}).get('compatibility','unsupported')
         p=ps.get(g['id'])
-        from derived import plan
         strategy=plan(g,p,bool(selected_engine and selected_engine.get('derivedProfiles'))) if p else {}
         g['preparationMode']=strategy.get('mode','registered')
         g['preparationVersion']=strategy.get('version','')
         selected=next((x for x in g['packages'] if p and f"v{x['version']}"==strategy.get('version',p.get('package')) and x['type'] in ('base','update')),None)
         if selected: g['display']=selected['display'] or p['builds'].get(strategy.get('version',p['package']),{}).get('display',strategy.get('version',''))
         g['onlineReady']=any((c.library/'games'/g['id']/name/'current/online/routes.tsv').is_file() for name in ('nextendo','nextendo-shared'))
+        g['sourcesOnNAS']=any(p.get('nasSource') for p in g['packages'])
+        g['localManagedSourceSize']=sum({p['path']:p.get('size',0) for p in g['packages'] if not p.get('nasSource')}.values())
+        g['onlinePreparation'] = (online_preparation(g, online_profiles.get(g['id']), online_dynamic)
+                                  if online_engine_issue is None else {'issues':[online_engine_issue]})
         manifest=read(c.library/'games'/g['id']/'current/manifest.json',{})
         cover=c.library/'games'/g['id']/'cover.jpg'; g['cover']=str(cover) if cover.exists() else ''
         nas_runtime=g.get('nasRuntime',{}) if not manifest else {}
@@ -323,7 +365,7 @@ def clean(c):
             sources=contained(c.library,c.library/'sources')
             def source_path(package):
                 return contained(sources,c.library/package['path'])
-            candidates={source_path(p) for p in game['packages']}
+            candidates={source_path(p) for p in game['packages'] if not p.get('nasSource')}
             if game.get('sourceKind')=='dump':
                 # Re-importing a changed tree can leave an unreferenced revision.
                 # Explicit source cleanup also removes those managed revisions.
@@ -335,14 +377,15 @@ def clean(c):
                 candidates.update(contained(sources,p) for p in parent.glob('*.nup')
                     if re.fullmatch(re.escape(g['id'])+r'_[0-9a-f]{64}\.nup',p.name))
             # Hidden games still own their files. A container may live under another title.
-            shared={source_path(p) for other in cat['games'] if other['id']!=g['id'] for p in other['packages']}
+            shared={source_path(p) for other in cat['games'] for p in other['packages']
+                    if other['id']!=g['id'] or p.get('nasSource')}
             paths=sorted(candidates-shared)
             if any(p.is_dir() and not (p.suffix=='.dump' and all(x.get('sourceKind')=='dump' for x in game['packages'] if source_path(x)==p)) for p in paths):
                 raise Failure('托管源文件路径无效，未执行清理。')
             c.check()
             # Detach references first: cancellation can leave orphans, never dangling
             # references belonging to another game or a partially deleted catalogue.
-            game['packages']=[]
+            game['packages']=[p for p in game['packages'] if p.get('nasSource')]
             c.save_catalog(cat)
             for index,path in enumerate(paths,1):
                 c.check()

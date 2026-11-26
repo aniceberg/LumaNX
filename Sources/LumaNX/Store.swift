@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import NextendoCore
 
 final class WorkerOutput: @unchecked Sendable {
     private let lock = NSLock()
@@ -18,6 +19,7 @@ final class WorkerOutput: @unchecked Sendable {
 }
 
 @MainActor final class Store: ObservableObject {
+    private enum QueuedPreparation { case offline, offlineThenNextendo(String), nextendo(String) }
     @Published var preferences = Preferences()
     @Published var importReview: ImportReview?
     @Published private(set) var scanningImports = false
@@ -56,6 +58,7 @@ final class WorkerOutput: @unchecked Sendable {
     @Published var globalInput = InputConfig.standard
     @Published var controllerLayouts = ControllerLayouts()
     @Published var queue: [String] = []
+    private var queuedPreparation: [String:QueuedPreparation] = [:]
     let privateRoot: URL
     let resources: URL
     var processes: [String:Process] = [:]
@@ -63,9 +66,10 @@ final class WorkerOutput: @unchecked Sendable {
     var suspensions: [String:TaskSuspension] = [:]
     var callbacks: [String:([String:Any])->Void] = [:]
     @Published var executionTask: String?
+    @Published private var checkingLaunchAccount = false
     var refreshTimer: Timer?
     var libraryURL: URL { URL(fileURLWithPath: preferences.library) }
-    var executionBusy: Bool { executionTask != nil || tasks.contains { $0.operation == "import" && $0.active } }
+    var executionBusy: Bool { checkingLaunchAccount || executionTask != nil || tasks.contains { $0.operation == "import" && $0.active } }
     var refreshingLibrary: Bool {catalogWorkers>0}
     var activeTasks: [TaskRecord] {tasks.filter{$0.active && $0.state != "queued" && $0.operation != "launch"}}
     var environmentReady: Bool { environmentReportComplete && !checkingEnvironment && !checks.isEmpty && checks.filter{$0.required(for:"prepare")}.allSatisfy(\.ok) }
@@ -119,7 +123,9 @@ final class WorkerOutput: @unchecked Sendable {
         notice="启动语言已设为\(name)，下次启动生效。"
     }
     var selected: Game? { games.first { $0.id == selectedGame } }
-    init(privateRoot overrideRoot: URL? = nil, resources overrideResources: URL? = nil) {
+    init(privateRoot overrideRoot: URL? = nil, resources overrideResources: URL? = nil,
+         nextendo: NextendoModel? = nil, catalogService: NextendoCatalogService? = nil) {
+        self.nextendo = nextendo ?? NextendoModel()
         let args = CommandLine.arguments
         if let overrideRoot { privateRoot = overrideRoot }
         else if let i = args.firstIndex(of:"--data-root"), args.count > i+1 { privateRoot = URL(fileURLWithPath:args[i+1]) }
@@ -127,6 +133,7 @@ final class WorkerOutput: @unchecked Sendable {
         else if let name = Bundle.main.object(forInfoDictionaryKey:"LumaNXDataDirectory") as? String, !name.isEmpty, !name.contains("/") { privateRoot = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent(name) }
         // Preserve the pre-rename application data directory for existing installations.
         else { privateRoot = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("NSMac") }
+        nextendoCatalog = catalogService ?? NextendoCatalogService(cacheURL:privateRoot.appendingPathComponent("online/catalog-cache.json"))
         if let overrideResources { resources = overrideResources }
         else if let r = Bundle.main.resourceURL, Bundle.main.bundleURL.pathExtension == "app" || FileManager.default.fileExists(atPath:r.appendingPathComponent("Worker/main.py").path) { resources = r }
         else { resources = URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
@@ -252,12 +259,35 @@ final class WorkerOutput: @unchecked Sendable {
         checks=[];environmentReportComplete=false;engineSupportsInput=false
         refresh();checkEnvironment()
     }
-    let nextendo = NextendoModel()
+    let nextendo: NextendoModel
+    private let nextendoCatalog: NextendoCatalogService
+    private var nextendoCatalogCheck: Task<Void,Never>?
+    @Published private(set) var nextendoCatalogSnapshot: NextendoCatalogSnapshot?
+    @Published private(set) var checkingNextendoCatalog = false
+
+    @discardableResult func checkNextendoCatalog(force: Bool = false) -> Task<Void,Never>? {
+        if let nextendoCatalogCheck { return nextendoCatalogCheck }
+        if !force, nextendoCatalogSnapshot?.freshness() == .fresh { return nil }
+        checkingNextendoCatalog = true
+        let check = Task {
+            defer { checkingNextendoCatalog = false; nextendoCatalogCheck = nil }
+            let cached = await nextendoCatalog.snapshot()
+            nextendoCatalogSnapshot = cached
+            guard force || cached.freshness() != .fresh else { return }
+            do {
+                nextendoCatalogSnapshot = try await nextendoCatalog.refresh()
+            } catch {
+                nextendoCatalogSnapshot = await nextendoCatalog.snapshot()
+            }
+        }
+        nextendoCatalogCheck = check
+        return check
+    }
     private var onlineRequest: [String:Any] { ["network":"nextendo","onlineEngineDir":preferences.onlineEngineDir ?? ""] }
     func chooseOnlineEngine() {
         let panel=NSOpenPanel();panel.title=L("选择联机引擎…");panel.canChooseDirectories=true;panel.canChooseFiles=false
         guard panel.runModal() == .OK,let folder=panel.url else {return}
-        preferences.onlineEngineDir=folder.path;savePreferences()
+        preferences.onlineEngineDir=folder.path;savePreferences();refresh()
     }
     func prepareOnlineEngine() {
         guard canManageToolchain else {return}
@@ -265,16 +295,41 @@ final class WorkerOutput: @unchecked Sendable {
     }
     func prepareOnline(_ game: Game) {
         guard !executionBusy, queue.isEmpty else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
+        let status = NextendoPreparationStatus(game:game,catalog:nextendoCatalogSnapshot)
+        guard status.canPrepare else {
+            error = status.reason
+            checkNextendoCatalog()
+            return
+        }
         selection="tasks"
         executionTask=worker("build",extra:onlineRequest.merging(["gameId":game.id]) {$1}) { _ in self.notice="游戏已准备完成，可以启动。" }
     }
-    func launchOnline(_ game: Game) {
+    func launchOnline(_ game: Game, offlineWhenSignedOut: Bool = false) {
         guard !executionBusy, queue.isEmpty, runtimeReady else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
+        let library = preferences.library
+        let engineDir = preferences.onlineEngineDir
+        let request = onlineRequest
+        checkingLaunchAccount = true
         Task {
-            await nextendo.reload()
-            guard nextendo.account?.hasNEXCredential == true else { error = nextendo.message ?? "请先在设置中登录 Nextendo。"; return }
-            guard !executionBusy, queue.isEmpty else { return }
-            executionTask=worker("launch",extra:onlineRequest.merging(["gameId":game.id,"gameLanguage":gameLanguage(for:game.id).rawValue]) {$1})
+            defer { startNext() }
+            let credential: Data?
+            do {
+                credential = try await nextendo.gameLaunchCredential()
+            } catch {
+                checkingLaunchAccount = false
+                self.error = NextendoModel.describe(error)
+                return
+            }
+            checkingLaunchAccount = false
+            guard !executionBusy, queue.isEmpty, library == preferences.library,
+                  engineDir == preferences.onlineEngineDir else { return }
+            if let credential {
+                executionTask=worker("launch",extra:request.merging(["gameId":game.id,"gameLanguage":gameLanguage(for:game.id).rawValue,"credentialPipe":true]) {$1},credential:credential)
+            } else if offlineWhenSignedOut, game.ready == true {
+                launch(game, offline: true)
+            } else {
+                error = "请先在设置中登录 Nextendo。"
+            }
         }
     }
     func prepareEngine() {
@@ -402,14 +457,25 @@ final class WorkerOutput: @unchecked Sendable {
                 let imported = self.games.filter { ids.contains($0.id) }
                 if let first = imported.first { self.selectedGame = first.id }
                 self.notice = "导入完成，源文件保持原样。"
+                guard prepare else { return }
                 let candidates = imported.filter { $0.buildable && ($0.ready != true || $0.needsPreparation == true) }
-                guard prepare, !candidates.isEmpty else { return }
+                let engine = self.preferences.onlineEngineDir
+                let offlineIDs = Set(candidates.map(\.id))
+                let onlineOnly = imported.filter {
+                    engine != nil && !offlineIDs.contains($0.id) && $0.onlineReady != true
+                        && $0.onlinePreparation?.issues.isEmpty == true && !$0.packages.isEmpty
+                }
+                guard !candidates.isEmpty || !onlineOnly.isEmpty else { return }
+                if engine != nil, imported.contains(where:{$0.onlinePreparation?.issues.isEmpty == true}) { self.checkNextendoCatalog() }
                 self.checkEnvironment {
                     guard libraryId == self.preferences.libraryId else { return }
                     guard self.environmentReady else {
                         self.selection = "settings"; self.notice = "游戏已导入，请完成工具链检查后准备运行文件。"; return
                     }
-                    candidates.forEach { self.enqueue($0) }
+                    candidates.forEach { self.enqueue($0,includeNextendo:true) }
+                    if let engine {
+                        onlineOnly.forEach { self.queueNextendoWhenEligible($0.id,libraryId:libraryId,engine:engine) }
+                    }
                     self.notice = "导入完成，文件齐全的游戏已加入准备队列；完成后可启动。"
                 }
             }
@@ -418,15 +484,16 @@ final class WorkerOutput: @unchecked Sendable {
     func refresh(completion: (() -> Void)? = nil) {
         guard !preferences.library.isEmpty else { return }
         let libraryId = preferences.libraryId
-        worker("catalog",visible:false) { r in
-            guard libraryId == self.preferences.libraryId else { return }
+        let onlineEngineDir = preferences.onlineEngineDir
+        worker("catalog",extra:["onlineEngineDir":onlineEngineDir ?? ""],visible:false) { r in
+            guard libraryId == self.preferences.libraryId, onlineEngineDir == self.preferences.onlineEngineDir else { return }
             if let games = Self.decode([Game].self,r["games"]) { self.games = games.filter { !$0.hidden } }
             if let profiles = Self.decode([GameProfile].self,r["profiles"]) { self.profiles = profiles }
             let keys = r["keys"] as? [String:Any] ?? [:]
             self.hasImportedKeys = keys["ready"] as? Bool == true
             self.keyStatus = keys["message"] as? String ?? "尚未导入 prod.keys"
             if let records = Self.decode([TaskRecord].self,r["jobs"]) {
-                for rec in records where rec.state=="failed" || ["archiveGame","restoreGame","publishNAS","restoreNAS","backupSave","restoreSave","activateRelease","setup","clean","remove","diagnostics","prepareEngine","import","build","exportIPA","convertFiles","launch","migrate","keys","installMetal","uninstallMetal"].contains(rec.operation) {
+                for rec in records where rec.state=="failed" || ["archiveGame","restoreGame","publishNAS","publishNASSources","restoreNAS","backupSave","restoreSave","activateRelease","setup","clean","remove","diagnostics","prepareEngine","import","build","exportIPA","convertFiles","launch","migrate","keys","installMetal","uninstallMetal"].contains(rec.operation) {
                     if !self.deletedTaskIDs.contains(rec.id),!self.tasks.contains(where: { $0.id == rec.id }) { self.tasks.append(rec) }
                 }
                 self.tasks.sort { ($0.started ?? 0) > ($1.started ?? 0) }
@@ -439,7 +506,7 @@ final class WorkerOutput: @unchecked Sendable {
         guard let obj, JSONSerialization.isValidJSONObject(obj), let d = try? JSONSerialization.data(withJSONObject:obj) else { return nil }
         return try? JSONDecoder().decode(type,from:d)
     }
-    @discardableResult func worker(_ operation: String, extra: [String:Any] = [:], visible: Bool = true, completion: (([String:Any])->Void)? = nil) -> String {
+    @discardableResult func worker(_ operation: String, extra: [String:Any] = [:], visible: Bool = true, credential: Data? = nil, completion: (([String:Any])->Void)? = nil) -> String {
         let id = UUID().uuidString.lowercased()
         if operation=="catalog" {catalogWorkers+=1}
         var req: [String:Any] = ["schema":1,"taskId":id,"operation":operation,"privateRoot":privateRoot.path,"resources":resources.path,"engineDir":preferences.engineDir ?? "","library":preferences.library.isEmpty ? privateRoot.appendingPathComponent("unconfigured").path : preferences.library,"libraryId":preferences.libraryId,"developerDir":preferences.developerDir,"parentPid":ProcessInfo.processInfo.processIdentifier]
@@ -455,6 +522,14 @@ final class WorkerOutput: @unchecked Sendable {
             let python = try pythonExecutable()
             let process = Process(); process.executableURL = python; process.arguments = ["-B","-I",resources.appendingPathComponent("Worker/main.py").path,"--request",file.path]
             var env = ProcessInfo.processInfo.environment; env["PYTHONUNBUFFERED"] = "1"; env["PYTHONDONTWRITEBYTECODE"] = "1"; env["PYTHONNOUSERSITE"] = "1"; env.removeValue(forKey:"PYTHONPATH"); env.removeValue(forKey:"PYTHONHOME"); process.environment = env
+            let credentialPipe = credential.map { _ in Pipe() }
+            if let credentialPipe {
+                let writer = credentialPipe.fileHandleForWriting
+                guard fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+                    throw POSIXError(.EIO)
+                }
+                process.standardInput = credentialPipe
+            }
             let pipe = Pipe(); process.standardOutput = pipe; let err = Pipe(); process.standardError = err
             let output = WorkerOutput()
             pipe.fileHandleForReading.readabilityHandler = { handle in
@@ -500,9 +575,15 @@ final class WorkerOutput: @unchecked Sendable {
                     if visible { self.refresh() }
                 }
             }
-            if visible { tasks.insert(.init(id:id,operation:operation,state:"running",gameId:extra["gameId"] as? String,started:Date().timeIntervalSince1970,outputPath:extra["outputPath"] as? String,conversion:Self.decode(ConversionJob.self,extra["conversion"]),importPaths:operation == "import" ? extra["paths"] as? [String] : nil,nupSelections:extra["nupSelections"] as? [String:[String]],backupId:extra["backupId"] as? String,releaseId:extra["releaseId"] as? String,libraryId:preferences.libraryId),at:0) }
+            if visible { tasks.insert(.init(id:id,operation:operation,state:"running",gameId:extra["gameId"] as? String,started:Date().timeIntervalSince1970,outputPath:extra["outputPath"] as? String,conversion:Self.decode(ConversionJob.self,extra["conversion"]),importPaths:operation == "import" ? extra["paths"] as? [String] : nil,nupSelections:extra["nupSelections"] as? [String:[String]],backupId:extra["backupId"] as? String,releaseId:extra["releaseId"] as? String,libraryId:preferences.libraryId,network:extra["network"] as? String,prepareNextendoAfterBuild:extra["prepareNextendoAfterBuild"] as? Bool),at:0) }
             callbacks[id] = completion; processes[id] = process
             try process.run()
+            if let credential, let writer = credentialPipe?.fileHandleForWriting {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { try? writer.close() }
+                    try? writer.write(contentsOf: credential)
+                }
+            }
             if operation == "preflight" {lastWorkerEvent[id]=Date();watchEnvironmentWorker(id)}
         } catch {
             if operation=="converterStatus" {checkingConverter=false}
@@ -513,7 +594,7 @@ final class WorkerOutput: @unchecked Sendable {
             self.errorDiagnostic=diagnostic
             if let i=tasks.firstIndex(where:{$0.id==id}) { tasks[i].state="failed";tasks[i].message=self.error;tasks[i].diagnostics=[diagnostic];persistTask(tasks[i]) }
             else {
-                let task=TaskRecord(id:id,operation:operation,state:"failed",gameId:extra["gameId"] as? String,message:self.error,started:Date().timeIntervalSince1970,diagnostics:[diagnostic])
+                let task=TaskRecord(id:id,operation:operation,state:"failed",gameId:extra["gameId"] as? String,message:self.error,started:Date().timeIntervalSince1970,network:extra["network"] as? String,prepareNextendoAfterBuild:extra["prepareNextendoAfterBuild"] as? Bool,diagnostics:[diagnostic])
                 tasks.insert(task,at:0);persistTask(task)
             }
             try? FileManager.default.removeItem(at:file)
@@ -586,31 +667,85 @@ final class WorkerOutput: @unchecked Sendable {
             }
         }
     }
-    func enqueue(_ game: Game) {
+    func enqueue(_ game: Game, includeNextendo: Bool = false) {
         guard importPrerequisitesReady(requiresKeys:game.sourceKind != "dump" && game.sourceKind != "nup") else { return }
         guard game.buildable else { error = (game.buildMissing ?? game.missing ?? []).joined(separator:"\n"); return }
         guard !queue.contains(game.id), !tasks.contains(where: { $0.operation == "build" && $0.gameId == game.id && $0.active && !$0.id.hasPrefix("queued-") }) else { return }
-        queue.append(game.id)
-        let rec = TaskRecord(id:"queued-"+game.id,operation:"build",state:"queued",gameId:game.id,started:Date().timeIntervalSince1970)
-        if let d = try? JSONEncoder().encode(rec) {try? d.write(to:privateRoot.appendingPathComponent("jobs/\(rec.id).json"),options:.atomic)}
+        let mode: QueuedPreparation
+        if includeNextendo, let engine = preferences.onlineEngineDir,
+           game.onlinePreparation?.issues.isEmpty == true, !game.packages.isEmpty {
+            mode = .offlineThenNextendo(engine)
+        } else { mode = .offline }
+        appendPreparation(game.id,mode:mode)
         selection = "tasks"; startNext()
+    }
+    private func appendPreparation(_ id: String, mode: QueuedPreparation) {
+        queuedPreparation[id] = mode
+        queue.append(id)
+        var rec = TaskRecord(id:"queued-"+id,operation:"build",state:"queued",gameId:id,started:Date().timeIntervalSince1970,
+                             network:isQueuedForNextendo(id) ? "nextendo" : nil)
+        if case .offlineThenNextendo = mode { rec.prepareNextendoAfterBuild = true }
+        if let d = try? JSONEncoder().encode(rec) {try? d.write(to:privateRoot.appendingPathComponent("jobs/\(rec.id).json"),options:.atomic)}
+    }
+    func isQueuedForNextendo(_ id: String) -> Bool {
+        if case .nextendo = queuedPreparation[id] { return true }
+        return false
     }
     func dequeue(_ id:String) {
         queue.removeAll {$0==id}
+        queuedPreparation.removeValue(forKey:id)
         let path=privateRoot.appendingPathComponent("jobs/queued-\(id).json")
         if let d=try? Data(contentsOf:path),var record=try? JSONDecoder().decode(TaskRecord.self,from:d){record.state="cancelled";record.message="已从队列移除";if let data=try? JSONEncoder().encode(record){try? data.write(to:path,options:.atomic)}}
     }
     func startNext() {
         guard !executionBusy, environmentReady, !queue.isEmpty else { return }
-        let id = queue.removeFirst(); try? FileManager.default.removeItem(at:privateRoot.appendingPathComponent("jobs/queued-\(id).json")); executionTask = worker("build",extra:["gameId":id]) { _ in self.notice = "游戏已准备完成，可以启动。" }
+        let id = queue.removeFirst()
+        try? FileManager.default.removeItem(at:privateRoot.appendingPathComponent("jobs/queued-\(id).json"))
+        let mode = queuedPreparation.removeValue(forKey:id) ?? .offline
+        let libraryId = preferences.libraryId
+        switch mode {
+        case .nextendo(let engine):
+            guard engine == preferences.onlineEngineDir else { startNext(); return }
+            executionTask = worker("build",extra:onlineRequest.merging(["gameId":id]) {$1}) { _ in
+                self.notice = "游戏已准备完成，可以启动。"
+            }
+        case .offline, .offlineThenNextendo:
+            var request: [String:Any] = ["gameId":id]
+            if case .offlineThenNextendo = mode { request["prepareNextendoAfterBuild"] = true }
+            executionTask = worker("build",extra:request) { _ in
+                self.notice = "游戏已准备完成，可以启动。"
+                if case .offlineThenNextendo(let engine) = mode {
+                    self.queueNextendoWhenEligible(id,libraryId:libraryId,engine:engine)
+                }
+            }
+        }
     }
-    func launch(_ game: Game) {
+    private func queueNextendoWhenEligible(_ id: String, libraryId: String, engine: String) {
+        let check = checkNextendoCatalog()
+        Task {
+            await check?.value
+            guard libraryId == preferences.libraryId, engine == preferences.onlineEngineDir,
+                  let game = games.first(where:{$0.id==id}), !queue.contains(id),
+                  !tasks.contains(where:{$0.gameId==id && $0.operation=="build" && $0.active && !$0.id.hasPrefix("queued-")})
+            else { return }
+            let status = NextendoPreparationStatus(game:game,catalog:nextendoCatalogSnapshot)
+            guard status.eligibility == .accepted, status.canPrepare else { return }
+            appendPreparation(id,mode:.nextendo(engine))
+            selection = "tasks"
+            startNext()
+        }
+    }
+    func launch(_ game: Game, offline: Bool = false) {
         guard !executionBusy, queue.isEmpty else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
         guard runtimeReady else {
             checkEnvironment {
-                if self.runtimeReady {self.launch(game)}
+                if self.runtimeReady {self.launch(game, offline: offline)}
                 else {self.onboardingStep=0;self.showOnboarding=true}
             }
+            return
+        }
+        if !offline, game.onlineReady == true, preferences.onlineEngineDir != nil {
+            launchOnline(game, offlineWhenSignedOut: true)
             return
         }
         executionTask = worker("launch",extra:["gameId":game.id,"gameLanguage":gameLanguage(for:game.id).rawValue,"performanceHUD":preferences.performanceHUD ?? false,"recordPerformance":preferences.recordPerformance ?? false,"benchmarkLabel":preferences.benchmarkLabel ?? ""])
@@ -679,12 +814,17 @@ final class WorkerOutput: @unchecked Sendable {
         guard let game = games.first(where:{$0.id == task.gameId}) else { return }
         if ["compressAssets","uncompressAssets"].contains(task.operation) {setAssetCompression(game,enabled:task.operation=="compressAssets");return}
         if ["archiveGame","publishNAS"].contains(task.operation) {
-            if let root=task.archiveRoot {runtimeTransfer(task.operation,game:game,extra:["archiveRoot":root])}
+            if let root=task.archiveRoot {
+                var options: [String:Any] = ["archiveRoot":root]
+                if task.operation == "publishNAS" {options["includeManagedSources"]=task.includeManagedSources ?? false}
+                runtimeTransfer(task.operation,game:game,extra:options)
+            }
             else if task.operation == "publishNAS" {publishPlayableGame(game)}
             else {archiveGame(game)}
         }
         else if task.operation == "restoreGame" {restoreGame(game)}
         else if task.operation == "restoreNAS" {moveNASGameBackToMac(game)}
+        else if task.operation == "publishNASSources" {runtimeTransfer(task.operation,game:game)}
         else if task.operation == "backupSave" { performRecovery("backupSave",game:game) }
         else if task.operation == "restoreSave" {
             if let id=task.backupId {performRecovery("restoreSave",game:game,extra:["backupId":id])}
@@ -693,8 +833,9 @@ final class WorkerOutput: @unchecked Sendable {
             if let id=task.releaseId {performRecovery("activateRelease",game:game,extra:["releaseId":id])}
         }
         else if task.operation == "launch" { launch(game) }
+        else if task.operation == "build", task.network == "nextendo" {prepareOnline(game)}
         else if task.operation == "exportIPA" { generateIPA(game,destination:task.outputPath.map { URL(fileURLWithPath:$0) }) }
-        else { enqueue(game) }
+        else { enqueue(game,includeNextendo:task.prepareNextendoAfterBuild == true) }
     }
     func remove(_ game: Game) { worker("remove",extra:["gameId":game.id]) { _ in self.refresh() } }
     func clean(_ game: Game, kind: String) {

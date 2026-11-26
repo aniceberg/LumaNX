@@ -144,6 +144,7 @@ struct ImportReviewView: View {
                 }.font(.callout).padding(.vertical,6)
             }
             Toggle(L("导入后准备游戏"),isOn:$prepare)
+                .help(L("如果已设置 Nextendo 联机引擎，且目录支持此游戏和版本，也会准备联机运行版本。"))
             HStack {
                 Spacer()
                 Button(L("取消")) { store.importReview = nil }.keyboardShortcut(.cancelAction)

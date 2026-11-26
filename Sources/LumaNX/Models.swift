@@ -29,6 +29,11 @@ struct NSPPackage: Codable, Identifiable {
 
     var kindName: String { ["base":L("本体"),"update":L("更新"),"dlc":"DLC"][type] ?? L("未知内容") }
 }
+struct OnlinePreparation: Codable {
+    var version: String?
+    var issues: [String]
+}
+
 struct Game: Codable, Identifiable {
     var id: String; var name: String; var display: String; var packages: [NSPPackage]; var hidden: Bool
     var compatibility: String?; var missing: [String]?; var cover: String?; var ready: Bool?; var needsPreparation: Bool?; var inputConfig:Bool?; var preparationMode:String?; var preparationVersion:String?
@@ -42,10 +47,13 @@ struct Game: Codable, Identifiable {
     var archived: Bool?
     var archivePath: String?
     var playingFromNAS: Bool?
+    var sourcesOnNAS: Bool?
+    var localManagedSourceSize: Int64?
     var archiveSize: Int64?
     var restoreSize: Int64?
     var sourceKind: String?
     var onlineReady: Bool?
+    var onlinePreparation: OnlinePreparation?
     var importedRetailVersion: (value: String, internalVersion: String, fromFilename: Bool, isUpdate: Bool)? {
         let candidates = packages.filter { $0.type == "update" || $0.type == "base" }
             .sorted { $0.version > $1.version }
@@ -85,9 +93,12 @@ struct TaskRecord: Codable, Identifiable {
     var importPaths: [String]?
     var nupSelections: [String:[String]]?
     var archiveRoot: String?
+    var includeManagedSources: Bool?
     var backupId: String?
     var releaseId: String?
     var libraryId: String?
+    var network: String?
+    var prepareNextendoAfterBuild: Bool?
     var milestones:[Milestone]?; var milestone:String?; var milestoneStarted:[String:Double]?
     var milestoneCached:[String]?
     var diagnostics: [TaskDiagnostic]?
@@ -102,7 +113,7 @@ struct TaskRecord: Codable, Identifiable {
     }
     var stateName: String { state == "completed" && hasWarnings ? L("完成（有警告）") : ["queued":L("排队"),"running":L("运行中"),"paused":L("已暂停"),"cancelling":L("取消中"),"cancelled":L("已取消"),"failed":L("失败"),"interrupted":L("中断"),"completed":L("完成")][state] ?? state }
     var active: Bool { ["running","paused","queued","cancelling"].contains(state) }
-    var title: String { ["restoreNAS":L("移回此 Mac"),"publishNAS":L("移至 NAS 并直接游玩"),"scanImport":L("扫描游戏文件"),"compressAssets":L("压缩游戏资源"),"uncompressAssets":L("使用未压缩资源"),"archiveGame":L("归档到 NAS"),"restoreGame":L("恢复到本地"),"backupSave":L("备份存档"),"restoreSave":L("恢复存档"),"activateRelease":L("切换运行版本"),"listRecovery":L("读取存档备份与运行版本"),"convertFiles":L("文件转换"),"conversionKeys":L("导入转换密钥"),"catalog":L("读取游戏库"),"saveInput":L("保存映射"),"worker":L("本地任务"),"setup":L("创建游戏库"),"clean":L("清理游戏文件"),"remove":L("移出游戏库"),"diagnostics":L("导出诊断"),"exportIPA":L("生成 IPA"),"prepareEngine":L("准备引擎工具"),"import":L("导入游戏"),"build":L("准备游戏"),"migrate":L("迁移构建"),"launch":L("运行游戏"),"keys":L("导入密钥"),"preflight":L("环境检查"),"installMetal":L("安装 Metal 编译组件"),"uninstallMetal":L("卸载 Metal 编译组件")][operation] ?? operation }
+    var title: String { operation == "build" && network == "nextendo" ? L("准备 Nextendo 联机") : ["publishNASSources":L("将托管源文件移至 NAS"),"restoreNAS":L("移回此 Mac"),"publishNAS":L("移至 NAS 并直接游玩"),"scanImport":L("扫描游戏文件"),"compressAssets":L("压缩游戏资源"),"uncompressAssets":L("使用未压缩资源"),"archiveGame":L("归档到 NAS"),"restoreGame":L("恢复到本地"),"backupSave":L("备份存档"),"restoreSave":L("恢复存档"),"activateRelease":L("切换运行版本"),"listRecovery":L("读取存档备份与运行版本"),"convertFiles":L("文件转换"),"conversionKeys":L("导入转换密钥"),"catalog":L("读取游戏库"),"saveInput":L("保存映射"),"worker":L("本地任务"),"setup":L("创建游戏库"),"clean":L("清理游戏文件"),"remove":L("移出游戏库"),"diagnostics":L("导出诊断"),"exportIPA":L("生成 IPA"),"prepareEngine":L("准备引擎工具"),"import":L("导入游戏"),"build":L("准备游戏"),"migrate":L("迁移构建"),"launch":L("运行游戏"),"keys":L("导入密钥"),"preflight":L("环境检查"),"installMetal":L("安装 Metal 编译组件"),"uninstallMetal":L("卸载 Metal 编译组件")][operation] ?? operation }
 }
 struct ToolCheck: Decodable, Identifiable {
     var id: String { name }; var name: String; var ok: Bool; var message: String

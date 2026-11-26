@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor final class NextendoModel: ObservableObject {
     static let scopes = ["identity", "friends", "game.matchmaking", "presence"]
     @Published private(set) var account: NextendoAccountSummary?
+    @Published private(set) var checkedAccount = false
     @Published private(set) var busy = false
     @Published private(set) var signingIn = false
     @Published var message: String?
@@ -20,10 +21,44 @@ import SwiftUI
     static func validClientID(_ id: String) -> Bool {
         id.range(of: "^nxc_[A-Za-z0-9_-]{3,128}$", options: .regularExpression) != nil
     }
-    /// Renews the 24-hour game token when needed.
+    /// A nil credential means there is no signed-in account. Renewal failures
+    /// are reported to the caller so it can distinguish them from sign-out.
+    func gameLaunchCredential() async throws -> Data? {
+        guard !busy else { throw NextendoError.authorizationUnavailable }
+        busy = true; defer { busy = false }
+        do {
+            account = try await service.currentAccount()
+            checkedAccount = true
+            message = nil
+            guard account != nil else { return nil }
+            account = try await service.prepareGameAccount()
+            guard let account else { return nil }
+            if account.isExpired { throw NextendoError.authorizationExpired }
+            return try await service.gameLaunchCredential()
+        } catch {
+            checkedAccount = true
+            message = Self.describe(error)
+            throw error
+        }
+    }
+
+    func refreshStatus() async {
+        guard !busy else { return }
+        do {
+            let current = try await service.currentAccount()
+            guard !busy else { return }
+            account = current
+            message = nil
+        } catch {
+            guard !busy else { return }
+            message = Self.describe(error)
+        }
+        checkedAccount = true
+    }
+
     func reload() async {
         guard !busy else { return }
-        busy = true; defer { busy = false }
+        busy = true; defer { busy = false; checkedAccount = true }
         do {
             account = try await service.currentAccount()
             if account != nil { account = try await service.prepareGameAccount() }
@@ -44,6 +79,7 @@ import SwiftUI
                     await service.cancelSignIn(); message = "无法打开登录页面，请检查默认浏览器。"; return
                 }
                 account = try await service.finishSignIn(request.id, forGames: true)
+                checkedAccount = true
             } catch is CancellationError {} catch { message = Self.describe(error) }
         }
     }
@@ -55,11 +91,89 @@ import SwiftUI
     func signOut() async {
         guard !busy else { return }
         busy = true; defer { busy = false }
-        do { try await service.signOut(); account = nil; message = nil } catch { message = Self.describe(error) }
+        do { try await service.signOut(); account = nil; checkedAccount = true; message = nil } catch { message = Self.describe(error) }
     }
     /// Transport errors can contain request URLs, so only typed errors are shown.
     static func describe(_ error: Error) -> String {
         (error as? NextendoError)?.errorDescription ?? "Nextendo 登录未完成，请重试。"
+    }
+}
+
+struct NextendoPreparationStatus {
+    let game: Game
+    let catalog: NextendoCatalogSnapshot?
+
+    var targetVersion: String? { row == nil ? nil : game.onlinePreparation?.version }
+    var eligibility: NextendoGameEligibility {
+        catalog?.evaluate(titleID:game.id,installedVersion:game.onlinePreparation?.version) ?? .catalogUnavailable
+    }
+    private var row: NextendoGamePolicy? {
+        guard catalog?.freshness() == .fresh else { return nil }
+        return catalog?.catalog?.games.first { $0.titleIDs.contains(game.id.lowercased()) }
+    }
+    var acceptedVersions: [String] {
+        guard let row, case .exact(let versions) = row.versionPolicy else { return [] }
+        return versions
+    }
+    private var installedRetailVersion: String? {
+        [game.runtimeRetailVersion, game.runtimeVersion].compactMap { $0 }.first {
+            $0.range(of:#"^\d+\.\d+(?:\.\d+){0,2}$"#,options:.regularExpression) != nil
+        }
+    }
+    var installedVersion: String? {
+        guard row != nil, game.ready == true else { return nil }
+        return installedRetailVersion ?? game.runtimeVersionLabel
+    }
+    var installedVersionNotAccepted: Bool {
+        guard game.ready == true, let installedRetailVersion, let row else { return false }
+        if case .versionNotAccepted = row.evaluate(installedVersion:installedRetailVersion) { return true }
+        return false
+    }
+    var showAcceptedVersions: Bool {
+        !acceptedVersions.isEmpty && (installedRetailVersion == nil || installedVersionNotAccepted
+                                      || targetVersion.map { !acceptedVersions.contains($0) } != false)
+    }
+    var canRetryCatalog: Bool { eligibility == .catalogUnavailable || eligibility == .catalogExpired }
+    var reason: String? {
+        switch eligibility {
+        case .notListed: return L("Nextendo 目录未列出此游戏。")
+        case .disabled: return L("Nextendo 目录已停用此游戏。")
+        case .catalogUnavailable, .catalogExpired: return L("暂时无法验证 Nextendo 目录，请重试。")
+        case .unsupportedCapabilities, .unsupportedPolicy: return L("此游戏需要当前 LumaNX 不支持的 Nextendo 功能。")
+        case .versionNotAccepted: return L("Nextendo 不支持此游戏的待准备版本。")
+        case .accepted, .versionUnknown:
+            if let issue = game.onlinePreparation?.issues.first { return L(issue) }
+            if game.packages.isEmpty { return L("添加 Nextendo 支持前，请先导入此游戏的源文件。") }
+            if game.onlinePreparation == nil { return L("正在检查联机构建条件…") }
+            return nil
+        }
+    }
+    var canPrepare: Bool { reason == nil }
+}
+
+struct NextendoLibraryStatus: View {
+    @EnvironmentObject var store: Store
+    @ObservedObject var model: NextendoModel
+
+    private var status: (label: String, symbol: String) {
+        if model.busy || !model.checkedAccount { return ("Nextendo · 正在检查", "arrow.triangle.2.circlepath") }
+        if model.message != nil || model.account?.hasNEXCredential == false {
+            return ("Nextendo · 需要检查", "exclamationmark.circle")
+        }
+        guard model.account != nil else { return ("Nextendo · 未登录", "person.crop.circle") }
+        guard store.preferences.onlineEngineDir != nil else { return ("Nextendo · 需要联机引擎", "gearshape") }
+        let onlineReady = store.selected.map { $0.onlineReady == true }
+            ?? store.games.contains { $0.onlineReady == true }
+        return onlineReady ? ("Nextendo · 联机就绪", "checkmark.circle.fill") : ("Nextendo · 已登录", "network")
+    }
+
+    var body: some View {
+        Button { store.selection = "settings" } label: {
+            Label(L(status.label), systemImage: status.symbol)
+        }
+        .buttonStyle(.plain)
+        .help(L("打开 Nextendo 设置"))
+        .task { await model.refreshStatus() }
     }
 }
 

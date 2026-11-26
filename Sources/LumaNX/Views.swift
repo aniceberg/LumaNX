@@ -22,6 +22,7 @@ struct ContentView: View {
                 }.listStyle(.sidebar).scrollContentBackground(.hidden)
                 VStack(alignment:.leading,spacing:6) {
                     Label(store.executionBusy ? L("任务进行中") : L("本地运行"),systemImage:store.executionBusy ? "circle.dotted" : "checkmark.shield")
+                    NextendoLibraryStatus(model:store.nextendo)
                     Text(L("游戏与密钥由玩家自行导入")).font(.caption).foregroundStyle(.secondary)
                     Text("LumaNX · " + (Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "0.2.7")).font(.caption2).foregroundStyle(.tertiary)
                 }.font(.caption).padding(12).frame(maxWidth:.infinity,alignment:.leading).glassSurface(16).padding(.bottom,16)
@@ -165,7 +166,19 @@ struct GameDetail: View {
             if game.sourceKind=="nup" {
                 Label(L("NUP 游戏 · 仅 Mac · 实验性"),systemImage:"desktopcomputer").font(.caption).foregroundStyle(.secondary)
             }
-            if game.ready==true {
+            if game.ready==true && game.onlineReady==true && store.preferences.onlineEngineDir != nil {
+                Menu {
+                    Button {store.launch(game, offline:true)} label:{Label(L("离线启动"),systemImage:"play.fill")}
+                    Button {store.launchOnline(game)} label:{Label(L("联机启动"),systemImage:"network")}
+                } label: {
+                    Label(L("启动游戏"),systemImage:"play.fill").frame(maxWidth:.infinity)
+                } primaryAction: {
+                    store.launch(game)
+                }
+                .buttonStyle(.glassProminent)
+                .controlSize(.large)
+                .disabled(store.executionBusy || !store.queue.isEmpty)
+            } else if game.ready==true {
                 Button {store.launch(game)} label:{Label(L("启动游戏"),systemImage:"play.fill").frame(maxWidth:.infinity)}.buttonStyle(.glassProminent).controlSize(.large).disabled(store.executionBusy || !store.queue.isEmpty)
             } else if game.archived==true {
                 Label(L("已归档到 NAS，恢复到本地后可启动。"),systemImage:"externaldrive").font(.caption).foregroundStyle(.secondary)
@@ -180,19 +193,19 @@ struct GameDetail: View {
                         .help((game.missing ?? []).map {L($0)}.joined(separator:"\n"))
                 }
             }
-            if store.preferences.onlineEngineDir != nil {
-                HStack {
-                    if game.onlineReady==true {
-                        Button {store.launchOnline(game)} label:{Label(L("联机启动"),systemImage:"network")}.disabled(store.executionBusy || !store.queue.isEmpty)
-                    }
-                    Button {store.prepareOnline(game)} label:{Label(L("准备联机版本"),systemImage:"hammer")}.disabled(store.executionBusy || !store.queue.isEmpty || game.packages.isEmpty)
-                }.controlSize(.small)
+            if store.preferences.onlineEngineDir != nil, game.onlineReady==true, game.ready != true {
+                Button {store.launchOnline(game)} label:{Label(L("联机启动"),systemImage:"network")}
+                    .controlSize(.small)
+                    .disabled(store.executionBusy || !store.queue.isEmpty)
             }
             DisclosureGroup(isExpanded:$detailsExpanded) {
                 VStack(alignment:.leading,spacing:10) {
                     HStack(alignment:.top,spacing:16) {
                         GameDetailField(title:"Title ID",value:game.id,monospaced:true)
                         if game.ready==true {GameDetailField(title:"当前运行版本",value:displayedVersion)}
+                    }
+                    if game.sourcesOnNAS == true {
+                        Label(L("源文件位于 NAS"),systemImage:"externaldrive").font(.caption).foregroundStyle(.secondary)
                     }
                     if !(game.missing ?? []).isEmpty {
                         Label(L("准备条件未满足"),systemImage:"exclamationmark.triangle").font(.subheadline).foregroundStyle(.orange)
@@ -280,6 +293,8 @@ struct GameDetail: View {
                         .disabled(!game.buildable)
                     toolDivider
                 }
+                nextendoPreparation
+                toolDivider
                 Button {store.generateIPA(game)} label:{GameToolLabel(title:"生成 IPA…",symbol:"iphone.and.arrow.forward",accessory:"chevron.right")}
                     .disabled(!game.canExportIPA || !game.buildable || store.executionBusy || !store.queue.isEmpty)
                     .help(game.canExportIPA ? L("导出 iPhone / iPad 未签名包；需 Xcode iOS 平台及 XcodeGen。") : L("NUP 与已解包游戏目前仅支持 Mac 运行，尚未开放 IPA 导出。"))
@@ -334,6 +349,9 @@ struct GameDetail: View {
                             if game.playingFromNAS == true {
                                 Label(L("直接从 NAS 游玩"),systemImage:"externaldrive.connected.to.line.below")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if (game.localManagedSourceSize ?? 0)>0 {
+                                    Button {store.publishManagedSources(game)} label:{GameToolLabel(title:"将托管源文件移至 NAS",symbol:"externaldrive.badge.plus")}
+                                }
                                 Button {store.moveNASGameBackToMac(game)} label:{GameToolLabel(title:"移回此 Mac",symbol:"arrow.down.to.line")}
                                     .help(L("校验并启用本地副本，保留 NAS 副本。"))
                             } else if game.archived == true {
@@ -362,6 +380,40 @@ struct GameDetail: View {
         } label:{GameToolLabel(title:"管理游戏",symbol:"slider.horizontal.3")}
         .disclosureGroupStyle(GameToolDisclosureStyle()).buttonStyle(GameToolButtonStyle())
         .modifier(GameToolCardStyle())
+    }
+    private var nextendoPreparation: some View {
+        let status = NextendoPreparationStatus(game:game,catalog:store.nextendoCatalogSnapshot)
+        return VStack(alignment:.leading,spacing:4) {
+            Button {store.prepareOnline(game)} label:{
+                GameToolLabel(title:"添加 Nextendo 支持",symbol:"network",accessory:"chevron.right")
+            }
+            .disabled(!status.canPrepare || store.executionBusy || !store.queue.isEmpty)
+            .help(L("为此游戏准备 Nextendo 多人联机。复用匹配的已编译着色器，并共享现有存档。"))
+            VStack(alignment:.leading,spacing:4) {
+                if let version = status.installedVersion {
+                    Text(String(format:L("已安装版本 %@"),version))
+                    if status.installedVersionNotAccepted { Text(L("Nextendo 不支持已安装版本。")) }
+                }
+                if let target = status.targetVersion, target != status.installedVersion {
+                    Text(String(format:L("待准备版本 %@"),target))
+                } else if status.canPrepare && status.targetVersion == nil {
+                    Text(L("准备期间将检查游戏版本。"))
+                }
+                if status.showAcceptedVersions {
+                    Text(String(format:L("Nextendo 支持的版本 %@"),status.acceptedVersions.joined(separator:", ")))
+                }
+                if status.canRetryCatalog && store.checkingNextendoCatalog {
+                    Text(L("正在检查 Nextendo 游戏目录…"))
+                } else if let reason = status.reason {
+                    Text(reason)
+                    if status.canRetryCatalog {
+                        Button(L("重试检查目录")) { store.checkNextendoCatalog(force:true) }
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }.font(.caption).foregroundStyle(.secondary).padding(.leading,42).padding(.trailing,12)
+        }
+        .onAppear {store.checkNextendoCatalog()}
     }
     private var toolDivider:some View {Divider().padding(.leading,44)}
 }
@@ -464,6 +516,9 @@ struct TasksView: View {
                         HStack(spacing:12) {
                             Text("\(i+1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width:24)
                             Text(store.games.first(where:{$0.id==id})?.name ?? id).lineLimit(1)
+                            if store.isQueuedForNextendo(id) {
+                                Label(L("准备 Nextendo 联机"),systemImage:"network").font(.caption).foregroundStyle(.secondary)
+                            }
                             Spacer()
                             Button(L("移出队列")) {store.dequeue(id)}.controlSize(.small)
                         }.padding(.vertical,4)

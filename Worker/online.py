@@ -6,7 +6,7 @@ tokens stay in Keychain and never enter requests, jobs, logs or game bundles.
 from __future__ import annotations
 import os, plistlib, shutil, subprocess, sys
 from pathlib import Path
-from core import Failure, clone, clone_tree, digest, read
+from core import Failure, chain_of, clone, clone_tree, contained, digest, read
 
 MODE = 'nextendo'
 # An engine that shares the bundled shader chain installs beside, never over, a stand-alone one.
@@ -49,19 +49,34 @@ def toolchain(c, repo, env):
     try: env['DM_OPENSSL_ROOT'] = str(_modules(repo)[0].prepare('macos'))
     except ERRORS as error: raise Failure('无法准备 Nextendo 加密组件，请检查网络后重试。') from error
 
-def policy(catalog, game_id, version):
-    """The server accepts exact versions only; reject a doomed build before compiling it."""
+def policy(catalog, game_id, version=None):
+    """Require an enabled title and check the exact version as soon as it is known."""
     row = next((r for r in catalog.get('games',[]) if game_id.lower() in [t.lower() for t in r['title_ids']]), None)
-    if row is None or not row['enabled']: raise Failure('Nextendo 目前未开放此游戏。')
-    accepted = (row.get('versions') or {}).get('accepted') or []
-    if version not in accepted: raise Failure(f'Nextendo 不接受游戏版本 {version}，可用版本：{"、".join(accepted)}')
+    if row is None or not row['enabled']: raise Failure('Nextendo 签名游戏目录尚未启用此游戏。')
+    versions = row.get('versions') or {}
+    capabilities = row.get('required_capabilities')
+    supported = {'versions.exact.v1', 'versions.any.v1'}
+    if (not isinstance(versions, dict) or not isinstance(capabilities, list)
+            or any(not isinstance(capability, str) or capability not in supported for capability in capabilities)):
+        raise Failure('此游戏需要当前 LumaNX 不支持的 Nextendo 功能。')
+    if versions.get('policy') == 'any' and 'versions.any.v1' in capabilities and not {'accepted','recommended'} & versions.keys():
+        return row
+    accepted = versions.get('accepted')
+    if (versions.get('policy') != 'exact' or 'versions.exact.v1' not in capabilities
+            or not isinstance(accepted, list) or not accepted
+            or not all(isinstance(value, str) and value for value in accepted)
+            or versions.get('recommended', accepted[0]) not in accepted):
+        raise Failure('此游戏需要当前 LumaNX 不支持的 Nextendo 功能。')
+    if version is not None and version not in accepted: raise Failure(f'Nextendo 不接受游戏版本 {version}，可用版本：{"、".join(accepted)}')
     return row
 
-def services(c, repo, root, gp, version):
-    _, bcat, patches, profile = _modules(repo)
-    try: catalog = patches.verified_catalog(repo, root/'nextendo-catalog', games=True)
+def game_catalog(repo, root):
+    _, _, patches, _ = _modules(repo)
+    try: return patches.verified_catalog(repo, root/'nextendo-catalog', games=True)
     except ERRORS as error: raise Failure('无法验证 Nextendo 游戏目录，请检查网络后重试。') from error
-    row = policy(catalog, gp.id, version)
+
+def services(c, repo, root, gp, version, row):
+    _, bcat, _, profile = _modules(repo)
     try: profile.prepare(repo, gp.id.lower(), root/'nextendo-services', row.get('protocol'))
     except ERRORS as error: raise Failure('无法准备 Nextendo 服务配置，请检查网络后重试。') from error
     data = None
@@ -120,7 +135,8 @@ def keep_lock(c, repo):
     rows = lambda path: dict(l.split('\t',1) for l in path.read_text().splitlines() if '\t' in l and not l.startswith('#'))
     try: shipped, actual = rows(Path(c.engine)/name), rows(Path(repo)/name)
     except (OSError,ValueError): return False
-    if 'metal_macosx' not in actual or any(shipped.get(k) != v for k,v in actual.items()) or set(shipped)-set(actual)-{'metal_iphoneos'}: return False
+    if 'metal_macosx' not in actual or 'missing' in actual.values(): return False
+    if any(shipped.get(k) != v for k,v in actual.items()) or set(shipped)-set(actual)-{'metal_iphoneos'}: return False
     shutil.copyfile(Path(c.engine)/name, Path(repo)/name)
     return True
 
@@ -130,35 +146,65 @@ def profile_inputs(repo, gp, env):
         env=dict(env,DM_GAME=gp.id),capture_output=True,text=True,timeout=120)
     return result.stdout.strip() if result.returncode == 0 else ''
 
-def offline_shaders(c, repo, gp, chain, inputs):
-    """The installed offline runtime whose shader libraries are exactly what this build would make, or None.
-
-    Same game files, translator chain and shader profile, and an unmodified library:
-    anything else falls through to a normal build."""
-    if not enabled(c) or not reads_images(repo) or not chain or not inputs or gp.get('graphics','nvn') in ('vulkan','gl'): return None
-    runtime = (c.library/'games'/gp.id/'current').resolve()
-    manifest = read(runtime/'manifest.json',{})
-    if not isinstance(manifest,dict) or manifest.get('gameId') != gp.id or manifest.get('chain') != chain: return None
-    if manifest.get('graphics','nvn') in ('vulkan','gl') or not manifest.get('sourceHashes'): return None
-    if sorted(manifest['sourceHashes']) != sorted(p['sha256'] for p in c.game()['packages']): return None
-    image = f'shaders/b-{chain}.img'; files = (manifest.get('artifacts') or {}).get('files') or {}
-    names = [image]+['profile/'+n for n in SHADER_TABLES]
-    try:
-        if digest(gp.table('shader_map.tsv')) != files['profile/shader_map.tsv'][1]: return None
-        head = f'# chain b-{chain} inputs {inputs} '
-        if not all((runtime/'profile'/n).read_text().startswith(head) for n in ('c1_full.tsv','cb_extent.tsv')): return None
-        for name in names:
-            path = runtime/name
-            if path.is_symlink() or [path.stat().st_size, digest(path)] != list(files[name]): return None
-    except (OSError,KeyError,IndexError,TypeError,ValueError): return None
-    return runtime
-
 SHADER_TABLES = ('shader_map.tsv','pso_manifest.tsv','c1_full.tsv','cb_extent.tsv')
 
-def copy_shared(c, runtime, stage, chain):
-    (stage/'shaders').mkdir(); (stage/'profile').mkdir(exist_ok=True)
-    clone(runtime/f'shaders/b-{chain}.img', stage/f'shaders/b-{chain}.img', c.progress)
-    for name in SHADER_TABLES: clone(runtime/'profile'/name, stage/'profile'/name)
+def shader_sources(c, game):
+    root = c.library/'games'/game['id']
+    slots = (game_root(c,game['id']), root) if enabled(c) else (root, root/SHARED, root/MODE)
+    for slot_root in slots:
+        try:
+            current = slot_root/'current'
+            if current.is_dir():
+                runtime = contained(c.library, current)
+                if current.is_symlink():
+                    contained(slot_root/'releases', runtime)
+                yield runtime, read(runtime/'manifest.json', {})
+        except (Failure, OSError, ValueError, RuntimeError):
+            continue
+    if game.get('nasRuntime'):
+        from nas_play import authenticated_runtime
+        try:
+            runtime, _, manifest = authenticated_runtime(game['nasRuntime'])
+            yield runtime, manifest
+        except (Failure, OSError, ValueError, KeyError, TypeError):
+            return
+
+def reusable_shaders(c, repo, game, gp, env):
+    """Find a matching installed macOS shader image in either play mode."""
+    if not reads_images(repo) or gp.get('graphics','nvn') != 'nvn': return None
+    chain = chain_of(repo,gp)
+    source_hashes = sorted(p['sha256'] for p in game['packages'])
+    if not chain or not source_hashes: return None
+    package = gp.get('package')
+    display = gp.builds()[package]['display']
+    names = [f'shaders/b-{chain}.img', *('profile/'+n for n in SHADER_TABLES)]
+    inputs = None
+    for runtime, manifest in shader_sources(c, game):
+        try:
+            if manifest.get('gameId') != gp.id or manifest.get('chain') != chain or manifest.get('graphics','nvn') != 'nvn': continue
+            if sorted(manifest['sourceHashes']) != source_hashes: continue
+            if 'internalVersion' in manifest:
+                if manifest['internalVersion'] != package: continue
+            elif manifest.get('version') != display: continue
+            files = {name: manifest['artifacts']['files'][name] for name in names}
+            if any((runtime/name).resolve() != runtime/name or (runtime/name).stat().st_size != files[name][0] for name in names): continue
+            if digest(gp.table('shader_map.tsv')) != files['profile/shader_map.tsv'][1]: continue
+            if inputs is None: inputs = profile_inputs(repo, gp, env)
+            if not inputs: return None
+            head = f'# chain b-{chain} inputs {inputs} '
+            if not all((runtime/'profile'/n).read_text().startswith(head) for n in ('c1_full.tsv','cb_extent.tsv')): continue
+            if all(digest(runtime/name, lambda *_: c.check()) == files[name][1] for name in names):
+                return runtime, files
+        except (OSError, AttributeError, KeyError, IndexError, TypeError, ValueError, RuntimeError):
+            continue
+        except subprocess.TimeoutExpired:
+            return None
+    return None
+
+def copy_shared(c, shared, stage):
+    runtime, files = shared
+    for name in files:
+        clone(runtime/name, stage/name, c.progress)
 
 def seed_pipelines(c, game_id, folder):
     """Start a shared-chain runtime from a copy of the offline pipeline cache; the two stay separate."""

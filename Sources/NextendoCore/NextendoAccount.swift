@@ -405,6 +405,21 @@ public actor NextendoAccountService {
         self.store = store; self.http = http; self.makeReceiver = makeReceiver; self.now = now
     }
     public func currentAccount() throws -> NextendoAccountSummary? { try store.load()?.summary(at: now()) }
+    public func gameLaunchCredential() throws -> Data {
+        guard let session = try store.load(), session.summary(at: now()).hasNEXCredential else {
+            throw NextendoError.authorizationUnavailable
+        }
+        guard var object = try JSONSerialization.jsonObject(with: session.encodedForStorage()) as? [String: Any] else {
+            throw NextendoError.invalidResponse
+        }
+        if var grant = object["renewal"] as? [String: Any] {
+            grant.removeValue(forKey: "refresh_token")
+            object["renewal"] = grant
+        }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        guard data.count <= 65_536 else { throw NextendoError.invalidResponse }
+        return data
+    }
     /// Background preparation uses only the account's already granted authority.
     /// One worker is shared by concurrent callers; a cancelled waiter does not
     /// cancel another waiter's refresh. Sign-out/new sign-in invalidates it.

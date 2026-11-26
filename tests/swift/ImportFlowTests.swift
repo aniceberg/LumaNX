@@ -1,8 +1,10 @@
 import XCTest
+import CryptoKit
+import NextendoCore
 @testable import LumaNX
 
 @MainActor final class ImportFlowTests: XCTestCase {
-    private func fixture(toolchainReady: Bool = true) throws -> (URL, Store) {
+    private func fixture(toolchainReady: Bool = true, catalogService: NextendoCatalogService? = nil) throws -> (URL, Store) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("lumanx-flow-"+UUID().uuidString)
         let resources = root.appendingPathComponent("resources")
         let worker = resources.appendingPathComponent("Worker")
@@ -17,7 +19,7 @@ import json, pathlib, sys
 r=json.loads(pathlib.Path(sys.argv[2]).read_text())
 root=pathlib.Path(r['resources']).parent
 with (root/'operations.jsonl').open('a') as f:
-    f.write(json.dumps({'operation':r['operation'],'gameId':r.get('gameId'),'paths':r.get('paths'),'confirmed':r.get('confirmed'),'engineDir':r.get('engineDir'),'gameLanguage':r.get('gameLanguage'),'outputPath':r.get('outputPath')})+'\n')
+    f.write(json.dumps({'operation':r['operation'],'gameId':r.get('gameId'),'paths':r.get('paths'),'confirmed':r.get('confirmed'),'engineDir':r.get('engineDir'),'onlineEngineDir':r.get('onlineEngineDir'),'network':r.get('network'),'gameLanguage':r.get('gameLanguage'),'outputPath':r.get('outputPath')})+'\n')
 if r['operation']=='catalog':
     result=json.loads((root/'catalog.json').read_text())
 elif r['operation']=='scanImport':
@@ -46,7 +48,7 @@ else:
 print(json.dumps({'schema':1,'taskId':r['taskId'],'type':'result','state':'completed','result':result}),flush=True)
 """#.write(to:worker.appendingPathComponent("main.py"),atomically:true,encoding:.utf8)
         try JSONSerialization.data(withJSONObject:toolchainReady,options:.fragmentsAllowed).write(to:root.appendingPathComponent("tools.json"))
-        let store = Store(privateRoot:root.appendingPathComponent("private"),resources:resources)
+        let store = Store(privateRoot:root.appendingPathComponent("private"),resources:resources,catalogService:catalogService)
         store.checks = [.init(name:"Fixture tools",ok:true,message:"fixture")]
         store.environmentReportComplete = true
         store.preferences.library = root.appendingPathComponent("中文 游戏库").path
@@ -81,6 +83,52 @@ print(json.dumps({'schema':1,'taskId':r['taskId'],'type':'result','state':'compl
         try await waitUntil {store.importReview != nil}
         let review = try XCTUnwrap(store.importReview)
         store.confirmImport(review,paths:Set(review.entries.map(\.path)),prepare:store.prepareAfterImport)
+    }
+    private struct CatalogResponse: NextendoHTTPClient {
+        let response: NextendoHTTPResponse
+        func send(_ request: URLRequest) async throws -> NextendoHTTPResponse { response }
+    }
+    private func nextendoCatalog(titles:[String]) throws -> NextendoCatalogService {
+        let key=Curve25519.Signing.PrivateKey()
+        let date=ISO8601DateFormatter()
+        let now=Date()
+        let rows: [[String:Any]] = titles.map {id in
+            ["title_ids":[id],"enabled":true,"required_capabilities":["versions.exact.v1"],
+             "versions":["policy":"exact","accepted":["12.0.0"]]]
+        }
+        let payload=try JSONSerialization.data(withJSONObject:[
+            "document_type":"game_catalog","schema_version":1,"revision":1,
+            "issued_at":date.string(from:now.addingTimeInterval(-60)),
+            "expires_at":date.string(from:now.addingTimeInterval(600)),"games":rows
+        ])
+        let envelope=try JSONSerialization.data(withJSONObject:[
+            "key_id":"catalog-key-1","payload":payload.base64EncodedString(),
+            "signature":try key.signature(for:payload).base64EncodedString()
+        ])
+        return NextendoCatalogService(http:CatalogResponse(response:.init(data:envelope,statusCode:200)),
+                                     cacheURL:nil,verifier:.init(publicKey:key.publicKey.rawRepresentation))
+    }
+    func testPrepareAfterImportQueuesNextendoOnlyForAcceptedGameVersions() async throws {
+        let accepted="0100C2500FC20000",wrongVersion="0400000000010000",unlisted="0400000000020000"
+        let (root,store)=try fixture(catalogService:nextendoCatalog(titles:[accepted,wrongVersion]))
+        store.preferences.onlineEngineDir=root.appendingPathComponent("fixture-nextendo").path
+        let games=[accepted,wrongVersion,unlisted].map {id in
+            var entry=game(id)
+            entry["sourceKind"]="nup"
+            entry["onlinePreparation"]=["version":id==wrongVersion ? "11.2.0" : "12.0.0","issues":[]]
+            entry["packages"]=[["titleId":id,"baseId":id,"version":0,"type":"base","name":id,
+                                 "display":"12.0.0","path":"game.nup","size":1,"sha256":"fixture","builds":[:]]]
+            return entry
+        }
+        try configure(root,games:games,imports:[accepted,wrongVersion,unlisted].map {["id":$0,"duplicate":false]})
+        try await reviewAndImport([root.appendingPathComponent("fixture.nup")],store:store)
+        try await waitUntil { self.operations(root).filter{$0["operation"] as? String=="build"}.count == 4 && !store.executionBusy }
+        let builds=operations(root).filter{$0["operation"] as? String=="build"}
+        XCTAssertEqual(builds.filter{$0["network"] as? String=="nextendo"}.compactMap{$0["gameId"] as? String},[accepted])
+        let acceptedBuilds=builds.filter{$0["gameId"] as? String==accepted}
+        XCTAssertNil(acceptedBuilds.first?["network"] as? String)
+        XCTAssertEqual(acceptedBuilds.last?["onlineEngineDir"] as? String,store.preferences.onlineEngineDir)
+        await cleanup(root,store)
     }
     func testPreviewDoesNotImportUntilConfirmationAndOnlyCopiesSelection() async throws {
         let (root, store) = try fixture()

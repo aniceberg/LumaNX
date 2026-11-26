@@ -346,6 +346,43 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, gp, **kwargs):
         self.cancel_host=False;before=self.events();self.build()
         self.assertEqual(self.events()[len(before):],['host'])
 
+    def test_cancelled_nextendo_install_preserves_the_active_online_release(self):
+        self.c.r['network']='nextendo'
+        catalog={'games':[{'title_ids':[TITLE],'enabled':True,'protocol':'nex',
+                          'required_capabilities':['versions.exact.v1'],
+                          'versions':{'policy':'exact','accepted':['1.0']}}]}
+        def stage_services(c, repo, root, *args):
+            path=root/'nextendo-services'
+            path.mkdir(exist_ok=True)
+            (path/'routes.tsv').write_text('offline test fixture')
+        with patch('online.game_catalog',return_value=catalog),patch('online.toolchain'), \
+             patch('online.services',side_effect=stage_services),patch('online.variant'):
+            self.build()
+            current=self.c.library/'games'/TITLE/'nextendo/current'
+            original=current.resolve(strict=True)
+            with patch('recovery.snapshot',side_effect=Cancelled):
+                with self.assertRaises(Cancelled): self.build()
+            self.assertEqual(current.resolve(strict=True),original)
+            self.assertTrue((current/'online/routes.tsv').is_file())
+
+    def test_build_reads_registered_sources_from_nas_and_preserves_runtime_when_offline(self):
+        import managed_sources
+        share=(self.root/'source-share').resolve()
+        location={'root':str(share),'gameId':TITLE}
+        for package in self.packages:
+            remote=managed_sources.nas_path(package,location)
+            remote.parent.mkdir(parents=True,exist_ok=True)
+            (self.c.library/package['path']).rename(remote)
+            package['nasSource']=location
+        self.save_game()
+        self.build()
+        current=self.c.library/'games'/TITLE/'current'
+        release=current.resolve(strict=True)
+        self.assertEqual((current/'romfs/marker').read_text(),'asset')
+        share.rename(share.with_name('offline'))
+        with self.assertRaisesRegex(Failure,'Reconnect the NAS share'): self.build()
+        self.assertEqual(current.resolve(strict=True),release)
+
     def test_target_workspaces_are_separate(self):
         self.build();mac=self.work
         # Test the coordinator's target selection without a real iOS compiler.

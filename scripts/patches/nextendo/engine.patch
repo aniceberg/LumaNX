@@ -551,10 +551,10 @@ index eb08b0e..58304fc 100644
  int dm_opmode(void);
  void dm_set_opmode(int m);          // On change, push notification 30 / 31 according to the switches the game has turned on
 diff --git a/dm/host/hle_account.c b/dm/host/hle_account.c
-index d212e07..9e6eef5 100644
+index d212e07..173f6d2 100644
 --- a/dm/host/hle_account.c
 +++ b/dm/host/hle_account.c
-@@ -1,8 +1,13 @@
+@@ -1,8 +1,14 @@
 -// nn::account: durable local profiles, process-local open sessions, and the native user selector.
 -// Online accounts remain unavailable. DM_NICK names user 1 (default Player).
 +// nn::account: the real device manages users via the acc:u0 service; the host has one fixed local user.
@@ -562,6 +562,7 @@ index d212e07..9e6eef5 100644
 +// OAuth social access alone does not enable a network-service identity or game token.
 +// DM_NICK overrides a validated cached nickname; a cold local account uses Player.
  #include "hle.h"
++#include "profile_placeholder.h"
  #include "front.h"
  #include "account_users.h"
 +#include "nextendo_account.h"
@@ -570,7 +571,7 @@ index d212e07..9e6eef5 100644
  
  typedef struct { uint64_t v[2]; } Uid;
  typedef struct { uint64_t v[3]; } UserHandle;
-@@ -10,6 +15,11 @@ _Static_assert(sizeof(Uid) == 16 && sizeof(UserHandle) == 24, "account ABI");
+@@ -10,6 +16,11 @@ _Static_assert(sizeof(Uid) == 16 && sizeof(UserHandle) == 24, "account ABI");
  static const Uid k_uid = {{DM_UID0, DM_UID1}};
  static Uid user_uid(int i) { return (Uid){{DM_UID0 + (uint64_t)i, DM_UID1}}; }
  #define RES_ACC_CANCELED (124u | 1u << 9)
@@ -582,7 +583,7 @@ index d212e07..9e6eef5 100644
  
  // The SDK's third handle word owns a session. Give each open a unique token:
  // copied/stale/foreign handles must not close a different open of the same UID.
-@@ -110,34 +120,37 @@ HLE_FORCE("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE", "gets the Ui
+@@ -110,34 +121,37 @@ HLE_FORCE("_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE", "gets the Ui
      // word. The game's own handles (third word 2 or 8) must continue to work.
      out->v[0] = h->v[0]; out->v[1] = h->v[1]; return RES_OK;
  }
@@ -639,7 +640,32 @@ index d212e07..9e6eef5 100644
  HLE_FORCE("_ZN2nn7account42NintendoAccountAuthorizationRequestContextC1Ev", "Nintendo Account authorization, out of scope; the constructor writes no memory", void, h_acc_NaCtor, void *self) { (void)self; }
  HLE_FORCE("_ZN2nn7account42NintendoAccountAuthorizationRequestContextD1Ev", "Nintendo Account authorization, out of scope", void, h_acc_NaDtor, void *self) { (void)self; }
  HLE_FORCE("_ZN2nn7account41CreateNintendoAccountAuthorizationRequestEPNS0_42NintendoAccountAuthorizationRequestContextERKNS0_10UserHandleERKNS0_45NintendoAccountAuthorizationRequestParametersEPvm",
-@@ -193,7 +206,28 @@ HLE_FORCE("_ZN2nn7account27StoreSaveDataThumbnailImageERKNS0_3UidEPKvm", "save-d
+@@ -165,24 +179,6 @@ HLE_FORCE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", "whether the UID is
+ HLE_FORCE("_ZN2nn7account15ShowUserCreatorEv", "native user creation, persisted before returning", Result, h_acc_ShowCreator, void) { DM_APPLET("user creator"); Uid uid; return show_selector(&uid, NULL, 1); }
+ // Every user on a console has a profile image, a 256x256 JPEG, and games decode it without checking the Result: Burnout Paradise Remastered handed the empty buffer of a failed load to
+ // nn::image::JpegDecoder, which asserted (GitHub issue #1118). The local user's is a plain 256x256 baseline JPEG (670 bytes); the size is the image's, the copy what the buffer holds
+-static const char k_profile_jpeg[] =
+-    "\xff\xd8\xff\xe0\x00\x10\x4a\x46\x49\x46\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00\x43\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\x09\x09\x08\x0a\x0c"
+-    "\x14\x0d\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c\x20\x24\x2e\x27\x20\x22\x2c\x23\x1c\x1c\x28\x37\x29\x2c\x30\x31\x34\x34\x34\x1f\x27"
+-    "\x39\x3d\x38\x32\x3c\x2e\x33\x34\x32\xff\xdb\x00\x43\x01\x09\x09\x09\x0c\x0b\x0c\x18\x0d\x0d\x18\x32\x21\x1c\x21\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32"
+-    "\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\xff\xc0"
+-    "\x00\x11\x08\x01\x00\x01\x00\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05"
+-    "\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x15\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x05\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f"
+-    "\x00\x8e\x02\xe2\x50\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+-    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x3f\xff\xd9";
+ HLE_FORCE("_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE", "user profile image: the local user's, a plain 256x256 JPEG", Result, h_acc_LoadImage, uint64_t *n, void *buf, uint64_t sz, const Uid *uid) {
+     (void)uid; uint64_t len = sizeof k_profile_jpeg - 1;
+     if (buf) memcpy(buf, k_profile_jpeg, sz < len ? sz : len);
+@@ -193,7 +189,28 @@ HLE_FORCE("_ZN2nn7account27StoreSaveDataThumbnailImageERKNS0_3UidEPKvm", "save-d
      (void)uid; (void)img; (void)n; return RES_OK;
  }
  HLE_FORCE("_ZN2nn7account28DeleteSaveDataThumbnailImageERKNS0_3UidE", "save-data thumbnail; the host keeps none", Result, h_acc_DeleteThumb, const Uid *uid) { (void)uid; return RES_OK; }
@@ -669,7 +695,7 @@ index d212e07..9e6eef5 100644
  HLE_FORCE("_ZN2nn7account9CloseUserERKNS0_10UserHandleE", "close exactly this session; other opens remain live", void, h_acc_CloseUser, const UserHandle *h) {
      if (!h) return;
      int user = dm_uid_user(h);
-@@ -203,7 +237,3 @@ HLE_FORCE("_ZN2nn7account9CloseUserERKNS0_10UserHandleE", "close exactly this se
+@@ -203,7 +220,3 @@ HLE_FORCE("_ZN2nn7account9CloseUserERKNS0_10UserHandleE", "close exactly this se
      if (*p) { account_session *s = *p; *p = s->next; free(s); }
      pthread_mutex_unlock(&g_account_lock);
  }
@@ -1391,10 +1417,10 @@ index 0000000..ee74e9c
 +    }
 +}
 diff --git a/dm/host/hle_friends.c b/dm/host/hle_friends.c
-index 4003a4b..d3887a4 100644
+index 4003a4b..28ee949 100644
 --- a/dm/host/hle_friends.c
 +++ b/dm/host/hle_friends.c
-@@ -1,25 +1,63 @@
+@@ -1,25 +1,64 @@
 -// nn::friends (friends / presence / invitations, out of scope): every interface that connects to the friends service is cut to "unavailable".
 +// nn::friends: local play-history key creation uses the player's imported
 +// firmware keyring. Explicit Nextendo mode can read real friends/presence and
@@ -1402,6 +1428,7 @@ index 4003a4b..d3887a4 100644
  // Not cut: the getters of Friend / Profile / FriendPresence and the constructors of Friend / Profile / UserPresence (they only read and write the game's own objects and do not go through the service).
  // Unless stated otherwise (presence and the notification queue are local and succeed), Result returns RES_FAIL; bool returns false; event pointers get a SystemEvent that is bound to a kernel event and never fires.
  #include "hle.h"
++#include "profile_placeholder.h"
 +#include "account_local.h"
 +#include "nextendo_social.h"
 +#include "nextendo_account.h"
@@ -1451,14 +1478,14 @@ index 4003a4b..d3887a4 100644
 -    (void)out; (void)off; (void)n; (void)filt; if (count) *count = 0; return RES_FAIL;
 +HLE_FORCE_WAIT("_ZN2nn7friends13GetFriendListEPiPNS0_6FriendEiiRKNS0_12FriendFilterE", "real provider friend snapshot in the verified SDK object layout", Result, h_fr_GetFriendList, int *count, void *out, int off, int n, const void *filt) {
 +    return dm_nextendo_friends_list(count,out,NULL,off,n,filt,false);
- }
--HLE_FORCE("_ZN2nn7friends25EnsureFriendListAvailableEPNS0_12AsyncContextE", "friend list (cut): the request fails at once", Result, h_fr_ListEnsureNoUid, void *ctx) { (void)ctx; return RES_FAIL; }
--HLE_FORCE("_ZN2nn7friends27CheckFriendListAvailabilityEPb", "friend list unavailable (cut)", Result, h_fr_ListAvailNoUid, uint8_t *out) { if (out) *out = 0; return RES_OK; }
++}
 +// The forms without a Uid act for the open local user. Splatoon 3 uses only these.
 +HLE_FORCE_WAIT("_ZN2nn7friends25EnsureFriendListAvailableEPNS0_12AsyncContextE", "fetch the actual friend snapshot for the open local user", Result, h_fr_ListEnsureNoUid, void *ctx) {
 +    uint8_t uid[16]; if (!dm_account_copy_uid(uid)) return RES_FAIL;
 +    return dm_nextendo_async_execute(ctx, dm_nextendo_friends_ensure, uid);
-+}
+ }
+-HLE_FORCE("_ZN2nn7friends25EnsureFriendListAvailableEPNS0_12AsyncContextE", "friend list (cut): the request fails at once", Result, h_fr_ListEnsureNoUid, void *ctx) { (void)ctx; return RES_FAIL; }
+-HLE_FORCE("_ZN2nn7friends27CheckFriendListAvailabilityEPb", "friend list unavailable (cut)", Result, h_fr_ListAvailNoUid, uint8_t *out) { if (out) *out = 0; return RES_OK; }
 +HLE_FORCE_WAIT("_ZN2nn7friends27CheckFriendListAvailabilityEPb", "availability follows the real provider friend snapshot of the open local user", Result, h_fr_ListAvailNoUid, uint8_t *out) {
 +    uint8_t uid[16]; if (!dm_account_copy_uid(uid)) return RES_FAIL;
 +    return dm_nextendo_friends_available(out, uid);
@@ -1469,7 +1496,7 @@ index 4003a4b..d3887a4 100644
  // Blocked users, SDK 4's overload without a Uid: an empty list and success. Dark Souls Remastered asks after the opening movie and turns a failure into an error for the error applet
  // (main+0x8ff9f0). The Uid overload below reports a failure, which DRAGON QUEST XI S takes as it is
  HLE_FORCE("_ZN2nn7friends18GetBlockedUserListEPiPNS_7account23NetworkServiceAccountIdEii", "blocked user list is empty (cut)", Result, h_fr_GetBlocked4, int *count, void *out, int off, int n) {
-@@ -37,11 +75,14 @@ HLE_FORCE("_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileERKNS
+@@ -37,11 +76,27 @@ HLE_FORCE("_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileERKNS
            Result, h_fr_GetProfileList, void *ctx, void *out, const void *uid, const void *ids, int n) { (void)ctx; (void)out; (void)uid; (void)ids; (void)n; return RES_FAIL; }
  HLE_FORCE("_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileEPKNS_7account23NetworkServiceAccountIdEi", "profile query fails (cut)",
            Result, h_fr_GetProfileListNoUid, void *ctx, void *out, const void *ids, int n) { (void)ctx; (void)out; (void)ids; (void)n; return RES_FAIL; }
@@ -1482,13 +1509,26 @@ index 4003a4b..d3887a4 100644
 +    uint8_t uid[16]; if (!dm_account_copy_uid(uid)) return RES_FAIL;
 +    return dm_nextendo_friends_update(f, uid, ids, n);
 +}
++// Splatoon 3 reads a friend's image when joining a room. The SDK implementation
++// opens friend:u directly. Supply the neutral image without opening that service.
++HLE_FORCE("_ZNK2nn7friends6Friend15GetProfileImageEPmPvm", "friend profile image: local placeholder JPEG",
++          Result, h_fr_ProfileImage, const void *self, uint64_t *written, void *buffer, uint64_t capacity) {
++    (void)self;
++    const uint64_t size = sizeof k_profile_jpeg - 1;
++    if (!written) return RES_FAIL;
++    *written = 0;
++    if (!buffer || capacity < size) return RES_FAIL;
++    memcpy(buffer, k_profile_jpeg, size);
++    *written = size;
++    return RES_OK;
++}
  HLE_FORCE("_ZN2nn7friends6Friend6UpdateEv", "friend info update fails (cut)", Result, h_fr_FriendUpdate, void *self) { (void)self; return RES_FAIL; }
 +HLE_FORCE_WAIT("_ZN2nn7friends16UpdateFriendInfoEPNS0_6FriendERKNS_7account3UidEPKNS3_23NetworkServiceAccountIdEi", "refresh the requested actual friend records and their application-presence fields",
 +          Result, h_fr_UpdateFriendInfo, void *f, const void *uid, const uint64_t *ids, int n) { return dm_nextendo_friends_update(f,uid,ids,n); }
  HLE_FORCE("_ZN2nn7friends14AddPlayHistoryERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameES6_", "play history is not registered (cut)",
            Result, h_fr_AddPlayHistory, const void *k, const void *a, const void *b) { (void)k; (void)a; (void)b; return RES_FAIL; }
  HLE_FORCE("_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb", "play history key unavailable (cut)",
-@@ -84,13 +125,12 @@ HLE_FORCE("_ZN2nn7friends33ShowMethodsOfSendingFriendRequestERKNS_7account3UidE"
+@@ -84,13 +139,12 @@ HLE_FORCE("_ZN2nn7friends33ShowMethodsOfSendingFriendRequestERKNS_7account3UidE"
  HLE_FORCE("_ZN2nn7friends18GetBlockedUserListEPiPNS_7account23NetworkServiceAccountIdERKNS2_3UidEii", "blocked user list is empty (cut)",
            Result, h_fr_GetBlocked, int *count, void *out, const void *uid, int off, int n) { (void)out; (void)uid; (void)off; (void)n; if (count) *count = 0; return RES_FAIL; }
  // Online play sessions (DRAGON QUEST XI S)
@@ -4259,10 +4299,10 @@ index 0000000..339858d
 +}
 diff --git a/dm/host/hle_nextendo_apple.m b/dm/host/hle_nextendo_apple.m
 new file mode 100644
-index 0000000..37b7e4e
+index 0000000..431c1b4
 --- /dev/null
 +++ b/dm/host/hle_nextendo_apple.m
-@@ -0,0 +1,486 @@
+@@ -0,0 +1,526 @@
 +// Native Nextendo credentials and account requests. This bridge never mints an nx2
 +// proof: its HMAC is checked by Nextendo, while the host checks identity and expiry.
 +#import <Foundation/Foundation.h>
@@ -4272,6 +4312,7 @@ index 0000000..37b7e4e
 +#import <LocalAuthentication/LocalAuthentication.h>
 +#include "nextendo_preflight_mac.h"
 +#include <signal.h>
++#include <poll.h>
 +#endif
 +#include <CommonCrypto/CommonDigest.h>
 +#include "nextendo_account.h"
@@ -4352,11 +4393,50 @@ index 0000000..37b7e4e
 +    }
 +    return scope||(![value isEqual:@"nextendo-emulator"]&&![value isEqual:@"unregistered"]);
 +}
++#if TARGET_OS_OSX
++static NSData *launchCredential;
++static bool launch_credential_provider(uint8_t *buffer, size_t capacity, size_t *size) {
++    if (!launchCredential.length || launchCredential.length > capacity) return false;
++    memcpy(buffer, launchCredential.bytes, launchCredential.length);
++    *size = launchCredential.length;
++    return true;
++}
++bool dm_nextendo_read_launch_pipe(void) { @autoreleasepool {
++    struct stat info;
++    if (fstat(STDIN_FILENO, &info) || !S_ISFIFO(info.st_mode)) return false;
++    NSMutableData *data = [NSMutableData data];
++    uint8_t block[4096];
++    struct pollfd pipe = {.fd = STDIN_FILENO, .events = POLLIN};
++    uint64_t deadline = clock_gettime_nsec_np(CLOCK_MONOTONIC) + 5000000000ull;
++    for (;;) {
++        uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
++        if (now >= deadline) return false;
++        int ready = poll(&pipe, 1, (int)((deadline - now + 999999) / 1000000));
++        if (ready < 0 && errno == EINTR) continue;
++        if (ready <= 0) return false;
++        ssize_t length = read(STDIN_FILENO, block, sizeof block);
++        if (length < 0 && errno == EINTR) continue;
++        if (length < 0 || data.length + (size_t)length > 65536) return false;
++        if (!length) break;
++        [data appendBytes:block length:(NSUInteger)length];
++    }
++    close(STDIN_FILENO);
++    if (!data.length) return false;
++    launchCredential = data;
++    dm_nextendo_set_credential_provider(launch_credential_provider);
++    return true;
++} }
++#endif
++
 +static void decode_oauth_grant(DmNextendoCredential *credential,id value,NSTimeInterval now) {
 +    if(![value isKindOfClass:NSDictionary.class])return;
 +    id token=value[@"access_token"],scopes=value[@"scopes"],expiry=value[@"expires_at"];
++    BOOL requiresRefreshToken = YES;
++#if TARGET_OS_OSX
++    requiresRefreshToken = launchCredential == nil;
++#endif
 +    if(!oauth_identifier(value[@"client_id"],NO)||!oauth_text(token)||[token hasPrefix:@"nx2."]||
-+       !oauth_text(value[@"refresh_token"])||!number(expiry)||!isfinite([expiry doubleValue])||[expiry doubleValue]<=now||
++       (requiresRefreshToken&&!oauth_text(value[@"refresh_token"]))||!number(expiry)||!isfinite([expiry doubleValue])||[expiry doubleValue]<=now||
 +       ![scopes isKindOfClass:NSArray.class]||![scopes count]||[scopes count]>32)return;
 +    NSMutableSet<NSString *> *permissions=[NSMutableSet new];
 +    for(id scope in scopes) {
@@ -5554,7 +5634,7 @@ index 0000000..7e71e0a
 +    return 0;
 +}
 diff --git a/dm/host/hle_offline.c b/dm/host/hle_offline.c
-index c3621bb..a8ab610 100644
+index c3621bb..e06b8bc 100644
 --- a/dm/host/hle_offline.c
 +++ b/dm/host/hle_offline.c
 @@ -1,10 +1,9 @@
@@ -5729,7 +5809,26 @@ index c3621bb..a8ab610 100644
  HLE_FORCE("_ZN2nn3err40ShowUnacceptableAddOnContentVersionErrorEv", "add-on content version mismatch error applet; the host only logs it", void, h_err_AocVer, void) { DM_APPLET("error"); LOG("game asks to show an error: add-on content version mismatch"); }
  // A Switch 2 Edition's program asks it when its upgrade add-on is older than it needs: Super Mario Bros. Wonder's Switch 2 program 1.2.1 reads aocup:/System/AocUpgradeVersion.txt and stops
  // below 3 (main+0x132b9b4); the console then asks the player to update the add-on. Unhooked, the SDK's applet call crashed on a null handle (sdk StartLibraryAppletImmediately)
-@@ -216,19 +171,23 @@ HLE_FORCE("_ZN2nn3web13ShowLobbyPageEPNS0_20LobbyPageReturnValueERKNS0_16ShowLob
+@@ -209,26 +164,39 @@ HLE_FORCE("_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStat
+     (void)out; (void)ids; (void)n;
+     return 0;
+ }
+-
+-// ---------- web: web page applet (online lobby). Unavailable ----------
+-HLE_FORCE("_ZN2nn3web13ShowLobbyPageEPNS0_20LobbyPageReturnValueERKNS0_16ShowLobbyPageArgE", "online lobby web applet (cut)", Result, h_web_Lobby, void *rv, const void *arg) { (void)rv; (void)arg; LOG("web::ShowLobbyPage (cut)"); return RES_FAIL; }
++// ---------- Web applets ----------
++// Splatoon 3 aborts on an applet Result error. Its LobbyPageReturnValue holds
++// the exit reason followed by the last URL and its length. Model a closed
++// applet with no URL so the game can return normally without voice chat.
++HLE_FORCE("_ZN2nn3web13ShowLobbyPageEPNS0_20LobbyPageReturnValueERKNS0_16ShowLobbyPageArgE",
++          "Splatoon 3 lobby applet closes without voice chat", Result, h_web_Lobby, void *rv, const void *arg) {
++    (void)arg;
++    if (!rv || strcmp(DM_GAME_ID, "0100C2500FC20000")) return RES_FAIL;
++    memset(rv, 0, 0x1010);
++    LOG("web::ShowLobbyPage: closed without voice chat");
++    return RES_OK;
++}
+ // Tears of the Kingdom imports the general web page applet too (the game constructs the return value itself, so it stays as constructed)
  HLE_FORCE("_ZN2nn3web11ShowWebPageEPNS0_18WebPageReturnValueERKNS0_14ShowWebPageArgE", "web page applet (cut)", Result, h_web_Page, void *rv, const void *arg) { (void)rv; (void)arg; LOG("web::ShowWebPage (cut)"); return RES_FAIL; }
  // Octopath Traveler 0 imports the offline HTML page applet too (pages shipped in the game's HTML document NCA, which the host does not extract)
  
@@ -6817,16 +6916,17 @@ index 07cfb63..ab21b50 100644
      }
      create_keys();
 diff --git a/dm/host/main.c b/dm/host/main.c
-index 283e098..1b8232e 100644
+index 283e098..837af9f 100644
 --- a/dm/host/main.c
 +++ b/dm/host/main.c
-@@ -3,19 +3,32 @@
+@@ -3,19 +3,33 @@
  #include "front.h"
  #include "../gfx/nvn/dmsh_chain.h"
  #include <CoreFoundation/CoreFoundation.h>
 +#include <TargetConditionals.h>
 +#if TARGET_OS_OSX
 +#include "nextendo_preflight_mac.h"
++#include "nextendo_account.h"
 +#endif
  #include <stdatomic.h>
  #include <sys/resource.h>
@@ -6853,18 +6953,23 @@ index 283e098..1b8232e 100644
      guest_thread_init();
      guest_gate_stack(0);   // the guest code runs on this thread's own stack: its SVCs get a stack of their own
      { void dm_oodle_serve_maybe(int); dm_oodle_serve_maybe(0); }   // DM_OODLE_SERVE tool mode: the game's own Oodle decoder over stdin / stdout (hle_oodle.c, exits when the input ends)
-@@ -171,6 +184,10 @@ void dm_host_preload_start(int argc, char **argv) {
+@@ -171,6 +185,15 @@ void dm_host_preload_start(int argc, char **argv) {
  }
  int main(int argc, char **argv) {
      if (argc == 2 && !strcmp(argv[1], "--check-tables")) { int dm_check_tables(void); return dm_check_tables(); }   // build-time check of the linked __DATA,swforce table (loader.c)
 +#if TARGET_OS_OSX
 +    if (argc == 2 && !strcmp(argv[1], DM_NEXTENDO_PREFLIGHT_ARG)) return dm_nextendo_account_preflight_child(DM_NEXTENDO_PREFLIGHT_FD);
 +    if (argc == 2 && !strcmp(argv[1], DM_NEXTENDO_PREFLIGHT_DIAGNOSTIC_ARG)) return dm_nextendo_account_preflight_diagnostic_child(DM_NEXTENDO_PREFLIGHT_FD);
++    const char *credentialPipe = getenv("DM_NEXTENDO_CREDENTIAL_PIPE");
++    if (credentialPipe && !strcmp(credentialPipe, "1") && !dm_nextendo_read_launch_pipe()) {
++        LOG("Nextendo: could not read the launcher credential pipe");
++        return 1;
++    }
 +#endif
      { int mtl_pso_prebuild_tool(void); int r = mtl_pso_prebuild_tool(); if (r) return r == 2; }   // DM_PSO_PREBUILD=tool: what a first start would build, made with no game (nvn_mtl.m)
      if (getenv("DM_PRELOAD")) dm_host_preload_start(argc, argv);   // Exercise the early-start path on Mac (on iOS it is called from the App's main())
      if (atomic_load(&g_pre.started)) {
-@@ -181,6 +198,12 @@ int main(int argc, char **argv) {
+@@ -181,6 +204,12 @@ int main(int argc, char **argv) {
          LOG("host loading already finished early in the background (dm_host_preload_start)");
      } else host_preload(argc, argv);
      { void dm_fps_state_apply(void); dm_fps_state_apply(); }   // frame rate and render scale into the frame step state page (loader.c): the iOS launcher sets them after the loading began
@@ -7501,10 +7606,10 @@ index 0000000..3ec51d6
 +void dm_nifm_submit_wait(void);
 diff --git a/dm/host/nextendo_account.h b/dm/host/nextendo_account.h
 new file mode 100644
-index 0000000..a1768ee
+index 0000000..fc09b27
 --- /dev/null
 +++ b/dm/host/nextendo_account.h
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,46 @@
 +// Native account bridge. Credentials stay in the local user's Keychain / authorized device document.
 +#pragma once
 +#include <stdbool.h>
@@ -7515,6 +7620,7 @@ index 0000000..a1768ee
 +// Test / embedding provider, installed before guest startup. It copies schema-1 JSON
 +// into the bounded caller buffer. No token is accepted through the environment.
 +typedef bool (*dm_nextendo_credential_provider)(uint8_t *buffer, size_t capacity, size_t *size);
++bool dm_nextendo_read_launch_pipe(void);
 +void dm_nextendo_set_credential_provider(dm_nextendo_credential_provider provider);
 +// A host that signs out/replaces stored credentials in this process must invalidate
 +// passive social authorization. This does not read storage or revoke a server token.
@@ -7855,6 +7961,33 @@ index 0000000..5ff50e0
 +    }
 +    errno = saved;
 +}
+diff --git a/dm/host/profile_placeholder.h b/dm/host/profile_placeholder.h
+new file mode 100644
+index 0000000..be3b7e7
+--- /dev/null
++++ b/dm/host/profile_placeholder.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++// Neutral 256x256 JPEG shared by account and friends profile-image hooks.
++static const char k_profile_jpeg[] =
++    "\xff\xd8\xff\xe0\x00\x10\x4a\x46\x49\x46\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00\x43\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\x09\x09\x08\x0a\x0c"
++    "\x14\x0d\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c\x20\x24\x2e\x27\x20\x22\x2c\x23\x1c\x1c\x28\x37\x29\x2c\x30\x31\x34\x34\x34\x1f\x27"
++    "\x39\x3d\x38\x32\x3c\x2e\x33\x34\x32\xff\xdb\x00\x43\x01\x09\x09\x09\x0c\x0b\x0c\x18\x0d\x0d\x18\x32\x21\x1c\x21\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32"
++    "\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\x32\xff\xc0"
++    "\x00\x11\x08\x01\x00\x01\x00\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05"
++    "\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x15\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x05\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00\x3f"
++    "\x00\x8e\x02\xe2\x50\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
++    "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x3f\xff\xd9";
 diff --git a/dm/host/ssl_backend.h b/dm/host/ssl_backend.h
 new file mode 100644
 index 0000000..29f75f6

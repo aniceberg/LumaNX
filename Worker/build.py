@@ -7,6 +7,7 @@ from core import *
 from library import requirements, inspect
 import milestones as ms
 import online
+import managed_sources
 from shader_artifacts import generate_tables, validate_library
 
 class ShaderProgress:
@@ -163,7 +164,7 @@ def chain_tools(c,repo,env,root):
     lock_tool=repo/'dm/gfx/tools/tool_lock.py'
     if not lock_tool.is_file(): lock_tool=repo/'dm/gfx/tools/dmsh_chain.py'
     c.run([sys.executable,lock_tool,'--update-lock'],root/'logs/toolchain.log',env)
-    if online.enabled(c) and online.keep_lock(c,repo):
+    if env.get('DM_MAC_ONLY') == '1' and online.keep_lock(c,repo):
         c.run([sys.executable,repo/'dm/gfx/tools/dmsh_chain.py','--header'],root/'logs/toolchain.log',env); return
     c.run([sys.executable,repo/'dm/gfx/tools/dmsh_chain.py','--header'],root/'logs/toolchain.log',env)
     c.run([sys.executable,lock_tool,'--check-tools'],root/'logs/toolchain.log',env)
@@ -329,7 +330,7 @@ def install(c,root,repo,gp,key,host,romfs,modules,shader,aoc=None,font=None,shar
     cp(aoc,'aoc')
     from runtime_payload import copy_shaders
     loose=online.enabled(c) and not online.reads_images(repo)
-    if shared: online.copy_shared(c,shared,stage,chain_of(repo,gp))
+    if shared: online.copy_shared(c,shared,stage)
     elif loose: online.copy_shaders(c,shader,stage/'shaders',chain_of(repo,gp),gp.get('graphics','nvn'))
     else: copy_shaders(c,shader,stage/'shaders',chain_of(repo,gp),gp.get('graphics','nvn'))
     clone(host,stage/'dmhost'); os.chmod(stage/'dmhost',0o755)
@@ -370,8 +371,13 @@ def install(c,root,repo,gp,key,host,romfs,modules,shader,aoc=None,font=None,shar
         from asset_storage import convert_files
         convert_files(c,stage,True)
     manifest['assetCompression']=requested
-    if online.enabled(c) and not loose: manifest['onlineImageReader']=True
+    if online.enabled(c):
+        if not loose: manifest['onlineImageReader']=True
+        if b'DM_NEXTENDO_CREDENTIAL_PIPE\0' in (stage/'dmhost').read_bytes():
+            manifest['nextendoCredentialPipe']=True
     manifest['artifacts']=runtime_inventory(c,stage)
+    if shared and any(manifest['artifacts']['files'].get(name) != expected for name,expected in shared[1].items()):
+        raise Failure('复用的着色器在复制时发生改变，请重新准备游戏。')
     atomic(stage/'manifest.json',manifest)
     validate_runtime(stage,gp)
     if online.enabled(c) or (dst/'current').exists():
@@ -426,19 +432,29 @@ def build(c,target='macos'):
         logs=root/'logs'; logs.mkdir(exist_ok=True); st=Stages(c,root,getattr(c,'buildGraph',None),getattr(c,'legacyStageInputs',None))
         strategy=read(root/'identity.json',{}).get('preparation',{})
         own=strategy.get('mode')=='derived'
+        if online.enabled(c):
+            c.begin('验证 Nextendo 游戏目录')
+            catalog=online.game_catalog(repo,root)
+            version=None if own else gp.builds()[gp.get('package')]['display']
+            row=online.policy(catalog,gp.id,version)
         versions=strategy.get('versions') or list(dict.fromkeys(gp.words('shader_versions',gp.get('package'))+[gp.get('package')]))
         capture_gl=gp.get('shader_glslc_capture','off')=='on'; capture_vk=gp.get('shader_vk_capture','off')=='on'; vk=gp.get('graphics','nvn')=='vulkan'
         ms.plan(c,g,target,versions,gp,read(root/'identity.json',{}))
         base=next((x for x in g['packages'] if x['type']=='base' and x['version']==0),None)
         sources=list({x['path']:x for x in g['packages']}.values())
+        source_paths={}
+        remote_stamps={}
         ms.enter(c,'verify','校验游戏源文件');source_total=sum(x['size'] for x in sources);source_done=0
         for x in sources:
-            c.check(); p=c.library/x['path']
-            if g.get('sourceKind')=='dump':
-                import dump
-                dump.verify(c,x)
-            elif not p.is_file() or digest(p,lambda n,t:c.progress(source_done+n,source_total))!=x['sha256']: raise Failure('托管源文件已丢失或内容发生改变，请重新导入。')
+            c.check(); p=managed_sources.resolve(c,x); source_paths[x['path']]=p
+            try:
+                if x.get('nasSource'): remote_stamps[p]=managed_sources.stamp(p)
+                managed_sources.verify(c,x,p,lambda n,t:c.progress(source_done+n,source_total))
+            except OSError as error:
+                if x.get('nasSource'): raise Failure(managed_sources.RECONNECT) from error
+                raise
             source_done+=x['size']
+        cleanup.enter_context(managed_sources.explain_disconnect(remote_stamps))
         needed=max(sum(x['size'] for x in sources),g.get('sourceExpandedSize',0))*2+(10 if target=='ios' else 3)*2**30
         if shutil.disk_usage(c.library).free<needed and not st.saved: raise Failure(f'准备游戏需要约 {needed/2**30:.0f} GB 可用空间。')
         dirs={}
@@ -450,30 +466,35 @@ def build(c,target='macos'):
         tail=(logs,extraction['app'],repo) if 'repo' in parameters else (None,logs,gp)
         if 'repo' in parameters: extraction={}
         for index,ver in enumerate(versions):
-            upd=next((c.library/x['path'] for x in g['packages'] if x['type']=='update' and f"v{x['version']}"==ver),None)
+            upd=next((source_paths[x['path']] for x in g['packages'] if x['type']=='update' and f"v{x['version']}"==ver),None)
             d=root/'extract'/ver; dirs[ver]=d
             if g.get('sourceKind')=='dump':
-                st.run('解包与合并 '+ver,[d],lambda d=d,upd=upd: dump.extract(c,upd or c.library/base['path'],d),milestone=f'unpack-{index}')
+                import dump
+                st.run('解包与合并 '+ver,[d],lambda d=d,upd=upd: dump.extract(c,upd or source_paths[base['path']],d),milestone=f'unpack-{index}')
             elif g.get('sourceKind')=='nup':
                 import nup
                 package = next((p for p in g['packages'] if p['type'] in ('base', 'update') and f"v{p['version']}" == ver), None)
                 if package is None: raise Failure('NUP 中缺少所需游戏版本。')
-                source = contained(c.library, c.library / package['path'])
+                source = source_paths[package['path']]
                 st.run('解包与合并 '+ver,[d],lambda d=d,ver=ver,source=source:nup.extract(c,source,int(ver[1:]),d),milestone=f'unpack-{index}')
             else:
-                st.run('解包与合并 '+ver,[d],lambda ver=ver,upd=upd: up.extract(c.nx(),c.keys,root/'extract',ver,c.library/base['path'],upd,*tail,**extraction),milestone=f'unpack-{index}')
+                st.run('解包与合并 '+ver,[d],lambda ver=ver,upd=upd: up.extract(c.nx(),c.keys,root/'extract',ver,source_paths[base['path']],upd,*tail,**extraction),milestone=f'unpack-{index}')
         if own:
             import derived
             gp,sources_info=derived.prepare_profile(c,st,up,gp,root,repo,env,dirs[strategy['version']],strategy['version'])
             if st.graph: st.graph.profile=gp
             c.emit('message','按实际游戏版本生成配置与着色器；可玩性仍需验证。')
-        aoc=root/'aoc'; dlcs=[(int(x['titleId'],16),x['version'],c.library/x['path']) for x in g['packages'] if x['type']=='dlc']
+        aoc=root/'aoc'; dlcs=[(int(x['titleId'],16),x['version'],source_paths[x['path']]) for x in g['packages'] if x['type']=='dlc']
         def dlc():
             if g.get('sourceKind')=='dump': dump.extract_dlc(c,[p for p in g['packages'] if p['type']=='dlc'],aoc,gp.id)
             elif g.get('sourceKind')=='nup': nup.extract_registered_dlc(c, g['packages'], aoc)
             elif dlcs: up.extract_aoc(c.nx(),c.keys,repo,root,int(gp.id,16),{'dlc':dlcs},logs)
             else: aoc.mkdir(); (aoc/'.empty').write_text('no DLC')
         st.run('处理 DLC',[aoc],dlc,milestone='dlc')
+        managed_sources.check_stamps(remote_stamps)
+        for package in sources:
+            if package.get('nasSource') and package.get('sourceKind') == 'dump':
+                managed_sources.verify(c,package,source_paths[package['path']])
         patched=root/('patched_'+gp.get('package')); selected=dirs[gp.get('package')]
         def rewrite():
             up.rewrite(sys.executable, repo, selected / 'ExeFS', patched, env, logs, gp)
@@ -487,13 +508,19 @@ def build(c,target='macos'):
             env = dict(env, DM_NRO_DIR=str(nro_dir))
         if online.enabled(c):
             c.begin('准备 Nextendo 联机组件')
-            version=gp.builds()[gp.get('package')]['display']
-            row,_=online.services(c,repo,root,gp,version)
+            if own:
+                version=gp.builds()[gp.get('package')]['display']
+                row=online.policy(catalog,gp.id,version)
+            online.services(c,repo,root,gp,version,row)
             online.variant(c,up,repo,root,selected,env,gp,row.get('protocol'))
-        shared=None
-        if online.enabled(c) and online.reads_images(repo): shared=online.offline_shaders(c,repo,gp,chain_of(repo,gp),online.profile_inputs(repo,gp,env))
+        shared=online.reusable_shaders(c,repo,g,gp,env) if target=='macos' else None
         if shared:
-            sh=root/'shader'; c.emit('cache','Reusing the installed offline shaders; nothing to compile.',done=1,total=1)
+            sh=root/'shader'
+            for milestone in ('capture_gl','capture_vk','extract','shaders'):
+                if any(item['id']==milestone for item in c.milestones):
+                    ms.enter(c,milestone)
+                    ms.cached(c)
+            c.emit('cache','已复用经过校验的着色器，无需重新编译。',done=1,total=1)
         elif own:
             gp=up.refine_after_rewrite(gp,selected,patched);derived.seal_profile(st,gp)
             if st.graph: st.graph.profile=gp
@@ -535,8 +562,8 @@ def build(c,target='macos'):
                     env.update(DM_GAMES_DIR=str(shader_profile.parent),DM_GAMES_FIRST='1')
                     c.emit('message','Using verified DLC-only shader tables; registered module fixes are preserved.')
                     return gp
-                # The online profile includes DLC shaders, so a library without that DLC differs too.
-                if (decoder.get('dlc_roms') or online.enabled(c)) and 'derive_dlc' in signature(up.split_shaders).parameters:
+                # The registered profile can include optional shaders absent from this installation.
+                if 'derive_dlc' in signature(up.split_shaders).parameters:
                     decoder['derive_dlc']=derive_dlc_profile
                 st.run('提取并核对着色器',[sh/'pkg'],lambda:up.split_shaders(sys.executable,repo,[romfs_source(d) for d in dirs.values()]+[d/'glslc_capture' for d in dirs.values() if (d/'glslc_capture').exists()],[d/'ExeFS/main' for d in dirs.values()],sh/'pkg',env,logs,gp,**decoder),milestone='extract')
                 # A checkpoint can reuse the split without invoking its callback.
@@ -557,6 +584,7 @@ def build(c,target='macos'):
                         from ipa import validate_shaders
                         validate_shaders(sh/'ios',gp,repo)
                 st.run('转换并编译 Metal 着色器',[sh/'cache']+([sh/'ios'] if target=='ios' else []),shaders,milestone='shaders')
+        managed_sources.check_stamps(remote_stamps)
         if target == 'ios':
             from ipa import package
             ms.enter(c,'ipa')
@@ -656,7 +684,15 @@ def launch(c):
         # of the optional keyboard/mouse mapping interface. Missing file = labels.
         env['DM_CONTROLLER_LAYOUTS']=str(c.private/'controller-layouts.json')
         log=c.private/'logs'/f'game-{g["id"]}.log'
-        try: c.run([host,runtime/'modules'],log,env,cwd=temp)
+        env.pop('DM_NEXTENDO_CREDENTIAL_PIPE',None)
+        if online.enabled(c) and c.r.get('credentialPipe') is True and read(runtime/'manifest.json',{}).get('nextendoCredentialPipe') is True:
+            env['DM_NEXTENDO_CREDENTIAL_PIPE']='1'
+            launch_options={'stdin':sys.stdin.buffer}
+        else:
+            if online.enabled(c) and c.r.get('credentialPipe') is True:
+                sys.stdin.close()
+            launch_options={}
+        try: c.run([host,runtime/'modules'],log,env,cwd=temp,**launch_options)
         except Failure as error:
             with log.open('rb') as f:
                 f.seek(max(0,log.stat().st_size-16384)); tail=f.read().decode(errors='replace')

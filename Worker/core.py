@@ -89,7 +89,7 @@ class Context:
         os.chmod(self.private, 0o700)
         self.jobpath = self.private / 'jobs' / (self.task + '.json')
         self.job = read(self.jobpath, {}) | {'schema': 1, 'id': self.task, 'operation': request['operation'], 'gameId': request.get('gameId'), 'state': 'running', 'started': time.time()}
-        for field in ('backupId','releaseId','libraryId'):
+        for field in ('backupId','releaseId','libraryId','archiveRoot','includeManagedSources','network','prepareNextendoAfterBuild'):
             if field in request: self.job[field]=request[field]
         if request['operation'] == 'exportIPA': self.job['outputPath'] = request.get('outputPath')
         if request['operation'] == 'convertFiles': self.job['conversion'] = request.get('conversion')
@@ -192,14 +192,14 @@ class Context:
     def nx(self):
         from engine import prepared_tools
         return prepared_tools(self) / 'tools/nx_extract/nx_extract'
-    def run(self, args, log=None, env=None, cwd=None, on_line=None):
+    def run(self, args, log=None, env=None, cwd=None, on_line=None, stdin=None):
         self.check(); log = Path(log or self.private / 'logs' / (self.task + '.log')); log.parent.mkdir(parents=True, exist_ok=True)
         self.last_log=log
         import diagnostics
         output=diagnostics.Output();tool=diagnostics.component(args)
         with log.open('a') as f:
             try:
-                p = subprocess.Popen([str(a) for a in args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env=env or self.env(), cwd=cwd, start_new_session=True)
+                p = subprocess.Popen([str(a) for a in args], stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', env=env or self.env(), cwd=cwd, start_new_session=True)
             except OSError as error:
                 diagnostic=diagnostics.failure(self,error,log=log,tool=tool)
                 self.report(diagnostic);raise Failure(diagnostic['summary'],diagnostic) from error

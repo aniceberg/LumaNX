@@ -121,6 +121,7 @@ def scan(c, folder):
 
 def import_game(c, folder):
     from library import requirements
+    import managed_sources
     c.begin('校验已解包游戏目录')
     tid,profile,packages=scan(c,folder)
     with c.lock():
@@ -133,6 +134,16 @@ def import_game(c, folder):
             parent=contained(c.library,c.library/'sources'/tid);parent.mkdir(parents=True,exist_ok=True)
             dest=parent/f'{package["titleId"]}_v{package["version"]}_{expected["sha256"]}.dump'
             contained(parent,dest)
+            existing=next((old for old in (game or {}).get('packages',[]) if old.get('nasSource')
+                           and old['sha256']==package_hash(package,expected['sha256'])),None)
+            if existing:
+                try:
+                    managed_sources.verify(c,existing,managed_sources.resolve(c,existing))
+                except (Failure,OSError):
+                    pass
+                else:
+                    recorded.append(package|{k:existing[k] for k in ('sourceKind','metadataSchema','path','size','treeSha256','sha256','nasSource')})
+                    continue
             if not dest.exists() or inventory(c,dest)!=expected:
                 if dest.exists(): raise Failure('托管源文件已丢失或内容发生改变，请重新导入。')
                 if shutil.disk_usage(parent).free<expected['size']+512*2**20:
@@ -162,10 +173,9 @@ def package_hash(package, tree_hash):
 
 
 def verify(c, package):
-    path=contained(c.library/'sources',c.library/package['path'])
-    actual=inventory(c,path)
-    if package_hash(package,actual['sha256'])!=package['sha256'] or actual['size']!=package['size']:
-        raise Failure('托管源文件已丢失或内容发生改变，请重新导入。')
+    from managed_sources import resolve, verify as verify_source
+    path=resolve(c,package)
+    verify_source(c,package,path)
     return path
 
 
@@ -177,8 +187,9 @@ def extract(c, source, destination):
 
 
 def extract_dlc(c, packages, destination, title):
+    from managed_sources import resolve
     destination.mkdir()
     if not packages: (destination/'.empty').write_text('no DLC')
     for package in packages:
-        copy_tree(c,contained(c.library/'sources',c.library/package['path']),
+        copy_tree(c,resolve(c,package),
             destination/str(int(package['titleId'],16)-int(title,16)-0x1000))

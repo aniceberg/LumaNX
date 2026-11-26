@@ -201,6 +201,7 @@ def import_game(c,path):
 
 def register(c,path,stage,sha,size):
     from library import requirements
+    import managed_sources
     c.begin('校验 NUP 游戏容器')
     with opened(c,stage) as (parser,n):
         tid,profile,packages=metadata(c,parser,n)
@@ -224,17 +225,27 @@ def register(c,path,stage,sha,size):
             raise Failure('同一游戏不能混用 NUP 与其他来源，请先清理托管源文件。')
         parent=contained(c.library,c.library/'sources'/tid);parent.mkdir(parents=True,exist_ok=True)
         dest=contained(parent,parent/f'{tid}_{sha}.nup')
+        nas_source=None
+        for old in (game or {}).get('packages',[]):
+            if old['sha256'] != sha or not old.get('nasSource'): continue
+            try:
+                managed_sources.verify(c,old,managed_sources.resolve(c,old),c.progress)
+                nas_source=old['nasSource']
+                break
+            except (Failure,OSError):
+                continue
         if dest.exists():
             if not dest.is_file() or digest(dest,c.progress)!=sha: raise Failure('托管源文件已丢失或内容发生改变，请重新导入。')
         for p in packages:
             p.update(sourceKind='nup',metadataSchema=2,path=str(dest.relative_to(c.library)),size=size,sha256=sha,name=name,sourceFilename=Path(path).name,sourceExpandedSize=expanded)
+            if nas_source: p['nasSource']=nas_source
         newest=max((p for p in packages if p['type']!='dlc'),key=lambda p:p['version'])
         if display:
             newest.update(display=display, retailVersionSource=retail_origin)
         if game:
             replaced = {package_key(package) for package in packages}
             retained = [package for package in game['packages']
-                        if package_key(package) not in replaced and contained(c.library, c.library / package['path']).is_file()]
+                        if package_key(package) not in replaced and (package.get('nasSource') or managed_sources.local_path(c,package).is_file())]
             packages = sorted(retained + packages, key=lambda p: (p['type'] == 'dlc', p['version'], p['titleId']))
             if not icon and retained:
                 cover_path = c.library / 'games' / tid / 'cover.jpg'
@@ -250,7 +261,7 @@ def register(c,path,stage,sha,size):
         game['missing']=requirements(game,profile)
         c.check();created=False
         try:
-            if not dest.exists(): stage.rename(dest);created=True
+            if not nas_source and not dest.exists(): stage.rename(dest);created=True
             save_with_cover(c,cat,cover,icon)
         except BaseException:
             if created: dest.unlink(missing_ok=True)
@@ -275,13 +286,14 @@ def extract_dlc(c,source,destination):
 
 
 def extract_registered_dlc(c, packages, destination):
+    from managed_sources import resolve
     groups = {}
     for package in packages:
         if package['type'] == 'dlc':
-            groups.setdefault(package['path'], set()).add(int(package['titleId'], 16))
+            groups.setdefault(resolve(c,package), set()).add(int(package['titleId'], 16))
     destination.mkdir(parents=True)
     for source, titles in groups.items():
-        with opened(c, contained(c.library, c.library / source)) as (parser, container):
+        with opened(c, source) as (parser, container):
             _, _, _, dlc = parser.scan(container)
             for title in sorted(titles):
                 c.check()

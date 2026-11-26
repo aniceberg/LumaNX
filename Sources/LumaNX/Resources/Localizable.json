@@ -3832,6 +3832,14 @@
     "en": "Prepare games after import"
   },
   {
+    "source": "如果已设置 Nextendo 联机引擎，且目录支持此游戏和版本，也会准备联机运行版本。",
+    "en": "Also prepares online play when the Nextendo engine is configured and the catalog supports the game and version."
+  },
+  {
+    "source": "准备 Nextendo 联机",
+    "en": "Prepare Nextendo online play"
+  },
+  {
     "source": "导入所选内容",
     "en": "Import selected"
   },
@@ -3896,8 +3904,28 @@
     "en": "Choose a folder on the NAS"
   },
   {
-    "source": "校验后移除本地运行文件。游戏直接从 NAS 加载资源，存档和构建任务保留在 Mac。",
-    "en": "After verification, the local runtime is removed. The game loads assets directly from the NAS. Saves and build tasks stay on this Mac."
+    "source": "校验后移除本地运行文件。游戏直接从 NAS 加载资源。存档、启动程序副本和构建缓存保留在 Mac。",
+    "en": "After verification, the game reads its assets from the NAS. Saves, a small launch executable, and build caches stay on your Mac."
+  },
+  {
+    "source": "包括托管源文件（%@）",
+    "en": "Include managed source files (%@)"
+  },
+  {
+    "source": "将托管源文件移至 NAS",
+    "en": "Move managed sources to NAS"
+  },
+  {
+    "source": "未来的构建将在 Mac 上运行，并从此游戏已登记的 NAS 目录读取源文件。",
+    "en": "Future builds run on this Mac and read source files from the game's registered NAS location."
+  },
+  {
+    "source": "托管源文件已移至 NAS。",
+    "en": "Managed source files moved to the NAS."
+  },
+  {
+    "source": "源文件位于 NAS",
+    "en": "Sources on NAS"
   },
   {
     "source": "游戏已移至 NAS，可直接启动。",
@@ -3972,12 +4000,108 @@
     "en": "Prepare online engine"
   },
   {
+    "source": "离线启动",
+    "en": "Launch offline"
+  },
+  {
+    "source": "Nextendo · 正在检查",
+    "en": "Nextendo · Checking"
+  },
+  {
+    "source": "Nextendo · 需要检查",
+    "en": "Nextendo · Check account"
+  },
+  {
+    "source": "Nextendo · 未登录",
+    "en": "Nextendo · Signed out"
+  },
+  {
+    "source": "Nextendo · 需要联机引擎",
+    "en": "Nextendo · Engine needed"
+  },
+  {
+    "source": "Nextendo · 联机就绪",
+    "en": "Nextendo · Online ready"
+  },
+  {
+    "source": "Nextendo · 已登录",
+    "en": "Nextendo · Signed in"
+  },
+  {
+    "source": "打开 Nextendo 设置",
+    "en": "Open Nextendo settings"
+  },
+  {
     "source": "联机启动",
     "en": "Launch online"
   },
   {
-    "source": "准备联机版本",
-    "en": "Prepare online version"
+    "source": "添加 Nextendo 支持",
+    "en": "Add Nextendo Support"
+  },
+  {
+    "source": "为此游戏准备 Nextendo 多人联机。复用匹配的已编译着色器，并共享现有存档。",
+    "en": "Prepares this game for Nextendo multiplayer. Reuses matching compiled shaders and shares your existing save."
+  },
+  {
+    "source": "Nextendo 目录未列出此游戏。",
+    "en": "Not listed by Nextendo."
+  },
+  {
+    "source": "Nextendo 目录已停用此游戏。",
+    "en": "Nextendo has disabled this game."
+  },
+  {
+    "source": "暂时无法验证 Nextendo 目录，请重试。",
+    "en": "The Nextendo catalog could not be verified. Try again."
+  },
+  {
+    "source": "此游戏需要当前 LumaNX 不支持的 Nextendo 功能。",
+    "en": "This game requires Nextendo features this version of LumaNX does not support."
+  },
+  {
+    "source": "Nextendo 不支持此游戏的待准备版本。",
+    "en": "Nextendo does not accept the version selected for preparation."
+  },
+  {
+    "source": "添加 Nextendo 支持前，请先导入此游戏的源文件。",
+    "en": "Import this game's source files to add Nextendo support."
+  },
+  {
+    "source": "所选联机引擎不可用，请在设置中重新选择。",
+    "en": "The selected online engine is unavailable. Choose it again in Settings."
+  },
+  {
+    "source": "正在检查联机构建条件…",
+    "en": "Checking online preparation requirements…"
+  },
+  {
+    "source": "已安装版本 %@",
+    "en": "Installed version %@"
+  },
+  {
+    "source": "Nextendo 不支持已安装版本。",
+    "en": "Nextendo does not accept the installed version."
+  },
+  {
+    "source": "待准备版本 %@",
+    "en": "Version to prepare %@"
+  },
+  {
+    "source": "准备期间将检查游戏版本。",
+    "en": "LumaNX will check the game version during preparation."
+  },
+  {
+    "source": "Nextendo 支持的版本 %@",
+    "en": "Nextendo accepts %@"
+  },
+  {
+    "source": "正在检查 Nextendo 游戏目录…",
+    "en": "Checking the Nextendo catalog…"
+  },
+  {
+    "source": "重试检查目录",
+    "en": "Retry catalog check"
   },
   {
     "source": "联机版本使用独立引擎与运行文件，但与离线版本共用存档；每次准备前会自动备份。",
@@ -4012,8 +4136,8 @@
     "en": "The Nextendo crypto component could not be prepared. Check the network and try again."
   },
   {
-    "source": "Nextendo 目前未开放此游戏。",
-    "en": "Nextendo does not currently offer this game."
+    "source": "Nextendo 签名游戏目录尚未启用此游戏。",
+    "en": "The signed Nextendo catalog does not yet enable this game."
   },
   {
     "source": "Nextendo 不接受游戏版本 {0}，可用版本：{1}",
@@ -4042,6 +4166,18 @@
   {
     "source": "Nextendo 运行文件不完整，请重新准备联机版本。",
     "en": "The Nextendo runtime is incomplete. Prepare the online version again."
+  },
+  {
+    "source": "验证 Nextendo 游戏目录",
+    "en": "Verify the Nextendo game catalog"
+  },
+  {
+    "source": "已复用经过校验的着色器，无需重新编译。",
+    "en": "Reused verified shaders. No recompilation needed."
+  },
+  {
+    "source": "复用的着色器在复制时发生改变，请重新准备游戏。",
+    "en": "The reused shaders changed during copying. Prepare the game again."
   },
   {
     "source": "准备 Nextendo 联机组件",

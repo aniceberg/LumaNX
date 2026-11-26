@@ -43,6 +43,85 @@ class RuntimeArchiveTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):return fn(*args)
     def saved(self):return (self.library/'saves'/GAME/'save.dat').read_bytes()
 
+    def managed_nup(self):
+        from core import digest
+        source=self.library/'sources'/GAME/'combined.nup'
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'combined base and update')
+        common=dict(path=str(source.relative_to(self.library)),sha256=digest(source),
+                    sourceKind='nup',size=source.stat().st_size)
+        catalog=self.c.catalog()
+        catalog['games'][0]['packages']=[common|dict(type='base',version=0),common|dict(type='update',version=458752)]
+        self.c.save_catalog(catalog)
+        return source
+
+    def test_publish_with_sources_copies_combined_nup_once_and_restores_runtime_only(self):
+        import managed_sources, nas_play
+        source=self.managed_nup()
+        self.archive.mkdir()
+        self.c.r['includeManagedSources']=True
+        with patch('managed_sources.clone',wraps=managed_sources.clone) as copy:
+            self.quiet(nas_play.publish,self.c)
+        self.assertEqual(copy.call_count,1)
+        self.assertFalse(source.exists())
+        packages=self.c.game()['packages']
+        destinations={managed_sources.resolve(self.c,p) for p in packages}
+        self.assertEqual(len(destinations),1)
+        remote=destinations.pop()
+        self.assertEqual(remote.read_bytes(),b'combined base and update')
+        self.quiet(nas_play.restore_local,self.c)
+        self.assertTrue(remote.is_file())
+        self.assertEqual(self.c.game()['packages'],packages)
+        self.assertFalse(source.exists())
+        self.assertEqual(self.saved(),b'keep my save')
+
+    def test_source_only_move_keeps_playable_runtime_and_hidden_shared_source(self):
+        import managed_sources, nas_play
+        source=self.managed_nup()
+        catalog=self.c.catalog()
+        catalog['games'].append(dict(id='0400000000000001',hidden=True,packages=[catalog['games'][0]['packages'][0].copy()]))
+        self.c.save_catalog(catalog)
+        self.archive.mkdir()
+        self.quiet(nas_play.publish,self.c)
+        active=self.c.game()['nasRuntime']
+        self.assertTrue(source.is_file())
+        self.quiet(nas_play.publish_sources,self.c)
+        self.assertEqual(self.c.game()['nasRuntime'],active)
+        self.assertTrue(source.is_file())
+        self.assertTrue(managed_sources.resolve(self.c,self.c.game()['packages'][0]).is_relative_to(self.archive.resolve()))
+        self.c.r['kind']='sources'
+        self.quiet(library.clean,self.c)
+        self.assertEqual(len(self.c.game()['packages']),2)
+        self.assertTrue(source.is_file())
+
+    def test_source_verification_failure_and_cancelled_retry_keep_original_assets(self):
+        import managed_sources, nas_play
+        source=self.managed_nup()
+        self.archive.mkdir()
+        self.c.r['includeManagedSources']=True
+        package=self.c.game()['packages'][0]
+        remote=managed_sources.nas_path(package,{'root':str(self.archive.resolve()),'gameId':GAME})
+        remote.parent.mkdir(parents=True)
+        remote.write_bytes(b'bad destination')
+        with self.assertRaises(Failure):
+            self.quiet(nas_play.publish,self.c)
+        self.assertTrue(source.is_file())
+        self.assertTrue((self.local/'current/dmhost').is_file())
+        self.assertNotIn('nasSource',self.c.game()['packages'][0])
+        remote.write_bytes(source.read_bytes())
+        with patch('nas_play.finish_publish',side_effect=Cancelled):
+            with self.assertRaises(Cancelled):
+                self.quiet(nas_play.publish,self.c)
+        self.assertTrue(source.is_file())
+        self.assertTrue((self.local/'current/dmhost').is_file())
+        published=self.c.game()['nasRuntime']['path']
+        with patch('managed_sources.clone') as copy:
+            result=self.quiet(nas_play.publish,self.c)
+        copy.assert_not_called()
+        self.assertEqual(result['path'],published)
+        self.assertFalse(source.exists())
+        self.assertFalse((self.local/'current').exists())
+
     def test_publish_nas_launch_uses_remote_assets_and_local_host_and_saves(self):
         import build
         import nas_play
