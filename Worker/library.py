@@ -306,7 +306,7 @@ def catalog(c):
     c.begin('读取游戏库',1,1); cat=c.catalog(); ps=profiles(c.engine) if selected_engine else {}
     from incremental import pipeline_version
     from derived import plan, supported
-    from online import select_engine
+    from online import select_engine, offline_runtime as online_runtime
     try:
         online_engine = select_engine(c.r)
         online_profiles = profiles(online_engine)
@@ -332,8 +332,15 @@ def catalog(c):
                                   if online_engine_issue is None else {'issues':[online_engine_issue]})
         manifest=read(c.library/'games'/g['id']/'current/manifest.json',{})
         cover=c.library/'games'/g['id']/'cover.jpg'; g['cover']=str(cover) if cover.exists() else ''
-        nas_runtime=g.get('nasRuntime',{}) if not manifest else {}
+        # Without a local offline build, the online build also plays offline (see build.launch).
+        shared=None if manifest else online_runtime(c,g['id'])
+        shared_manifest=read(shared/'manifest.json',{}) if shared else {}
+        g['offlineFromOnline']=bool(shared_manifest)
+        nas_runtime=g.get('nasRuntime',{}) if not (manifest or shared_manifest) else {}
         g['playingFromNAS']=bool(nas_runtime)
+        # Version and capability fields describe what an offline launch runs; only a
+        # local offline build can need preparing again, so `manifest` stays offline-only.
+        offline_manifest=manifest; manifest=manifest or shared_manifest
         g['ready']=bool(manifest or nas_runtime)
         g['assetCompression']=bool((manifest or nas_runtime).get('assetCompression'))
         g['assetCompressionCapable']=manifest.get('assetCompressionReader')==1
@@ -349,6 +356,7 @@ def catalog(c):
         g['runtimeInternalVersion'] = runtime_metadata.get('internalVersion')
         g['runtimeRetailVersion'] = runtime_metadata.get('retailVersion')
         g['inputConfig']=(manifest or nas_runtime).get('inputConfig',True) if manifest or nas_runtime else bool(selected_engine and selected_engine['inputConfig'])
+        manifest=offline_manifest
         g['needsPreparation']=bool(manifest) and (selected_engine is not None and manifest.get('engine') != selected_engine['fingerprint'] or bool(g['packages']) and manifest.get('sourceHashes') != sorted(x['sha256'] for x in g['packages']))
         if manifest and manifest.get('pipeline')!=pipeline: g['needsPreparation']=True
     cat['profiles']=[{'id':x['id'],'name':x['name'],'compatibility':x['compatibility'],'version':x['builds'].get(x['package'],{}).get('display','')} for x in ps.values()]

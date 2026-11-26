@@ -676,14 +676,18 @@ def launch(c):
     from toolchain import require_launch_environment
     require_launch_environment(c)
     with c.lock('execution'):
-        g=c.game(); current=online.game_root(c,g['id'])/'current'
+        g=c.game(); slot_root=online.game_root(c,g['id']); current=slot_root/'current'
+        # Offline order: a local offline build, then the online build with networking off, then the NAS.
+        shared=None if online.enabled(c) or current.exists() else online.offline_runtime(c,g['id'])
         if online.enabled(c): runtime,host=current,current/'dmhost'
+        elif shared: runtime,host,slot_root=shared,shared/'dmhost',c.library/'games'/g['id']/online.SHARED
         else:
             from nas_play import launch_paths
             runtime,host=launch_paths(c,g,current)
-        if runtime == current: validate_runtime(runtime)
+        if runtime in (current,shared): validate_runtime(runtime)
         c.begin('游戏运行中',1,1)
-        save=c.library/'saves'/g['id']; temp=c.library/'temp'/g['id']; pso=online.game_root(c,g['id'])/'pso_user/pipelines.tsv'
+        # The online build keeps its own pipeline cache in either mode.
+        save=c.library/'saves'/g['id']; temp=c.library/'temp'/g['id']; pso=slot_root/'pso_user/pipelines.tsv'
         if online.enabled(c): online.seed_pipelines(c,g['id'],pso.parent)
         for p in (save,temp,pso.parent): p.mkdir(parents=True,exist_ok=True)
         config=c.r.get('inputConfig') or read(c.library/'mappings'/f"{g['id']}.json") or read(c.private/'default-input.json')

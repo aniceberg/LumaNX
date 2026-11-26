@@ -30,6 +30,24 @@ def schedule(c, game_id, version):
     """Event data lives beside the online runtime, so every app that opens the library finds it."""
     return game_root(c,game_id)/'bcat'/version
 
+def offline_runtime(c, game_id):
+    """The shared-chain online build, when it can also be played offline.
+
+    Its engine keeps every network service off unless DM_NETWORK selects one, so a
+    launch without that variable plays offline. Only the shared slot qualifies: it
+    runs the ported engine. The older stand-alone slot does not.
+    """
+    root = c.library/'games'/game_id/SHARED
+    current = root/'current'
+    try:
+        if not current.is_symlink() or not current.is_dir(): return None
+        runtime = contained(root/'releases', current.resolve(strict=True))
+        if read(runtime/'manifest.json', {}).get('gameId') != game_id: return None
+        if not (runtime/'dmhost').is_file() or not (runtime/'Info.plist').is_file(): return None
+        return runtime
+    except (Failure, OSError, ValueError, RuntimeError):
+        return None
+
 def slot(c):
     engine = getattr(c,'engine',None)
     return SHARED if engine and reads_images(engine) else MODE

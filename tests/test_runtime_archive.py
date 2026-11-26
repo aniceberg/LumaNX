@@ -152,6 +152,62 @@ class RuntimeArchiveTests(unittest.TestCase):
         current.symlink_to(new_release.relative_to(self.local), target_is_directory=True)
         self.assertEqual(nas_play.launch_paths(self.c, self.c.game(), current), (current, current / 'dmhost'))
 
+    def online_build(self):
+        """Turn the fixture into an online build in the shared slot, with no offline build."""
+        import online
+        slot=self.local/online.SHARED;(slot/'releases').mkdir(parents=True)
+        release=slot/'releases'/'online-fixture';self.runtime.rename(release)
+        (self.local/'current').unlink()
+        (slot/'current').symlink_to('releases/online-fixture',target_is_directory=True)
+        (release/'Info.plist').write_bytes(b'synthetic bundle')
+        (release/'online').mkdir();(release/'online/routes.tsv').write_text('synthetic routes')
+        return slot,release
+
+    def offline_launch(self):
+        import build
+        captured={}
+        def run(args,log,env,**kwargs):captured.update(host=args[0],modules=args[1],env=env)
+        self.c.r.pop('network',None)
+        with patch('toolchain.require_launch_environment'),patch.object(self.c,'run',side_effect=run):
+            self.quiet(build.launch,self.c)
+        return captured
+
+    def test_offline_launch_uses_online_build_with_networking_off(self):
+        slot,release=self.online_build()
+        captured=self.offline_launch()
+        self.assertEqual(Path(captured['host']).resolve(),(release/'dmhost').resolve())
+        self.assertEqual(Path(captured['modules']).resolve(),(release/'modules').resolve())
+        self.assertNotIn('DM_NETWORK',captured['env'])
+        self.assertNotIn('DM_NEXTENDO_ROUTES',captured['env'])
+        self.assertEqual(Path(captured['env']['DM_PSO_USER']).resolve(),(slot/'pso_user/pipelines.tsv').resolve())
+        self.assertEqual(Path(captured['env']['DM_SAVE']).resolve(),(self.library/'saves'/GAME).resolve())
+
+    def test_offline_launch_prefers_online_build_over_nas_and_local_offline_build_over_both(self):
+        slot,release=self.online_build()
+        catalog=self.c.catalog();catalog['games'][0]['nasRuntime']=dict(id='nas',path=str(self.archive/'missing'))
+        self.c.save_catalog(catalog)
+        self.assertEqual(Path(self.offline_launch()['host']).resolve(),(release/'dmhost').resolve())
+        import shutil
+        offline=self.local/'releases'/'offline';shutil.copytree(release,offline)
+        (offline/'dmhost').write_bytes(b'offline host')
+        (self.local/'current').symlink_to('releases/offline',target_is_directory=True)
+        self.assertEqual(Path(self.offline_launch()['host']).resolve(),(offline/'dmhost').resolve())
+
+    def test_online_build_alone_counts_as_ready_without_asking_for_an_offline_build(self):
+        self.online_build()
+        self.c.engine=self.root/'engine'
+        with patch('engine.inspect_source',return_value=dict(fingerprint='bundled-engine',derivedProfiles=False,inputConfig=False)),patch.object(library,'refresh_container_metadata'),patch.object(library,'profiles',return_value={}):
+            game=self.quiet(library.catalog,self.c)['games'][0]
+        self.assertTrue(game['ready']);self.assertTrue(game['offlineFromOnline'])
+        self.assertFalse(game['needsPreparation']);self.assertFalse(game['playingFromNAS'])
+        self.assertEqual(game['runtimeVersion'],'v458752')
+
+    def test_stand_alone_online_slot_is_never_used_offline(self):
+        import online
+        slot,release=self.online_build()
+        (self.local/online.MODE).mkdir();(slot).rename(self.local/online.MODE/'moved')
+        self.assertIsNone(online.offline_runtime(self.c,GAME))
+
     def test_failed_nas_publish_retains_active_game(self):
         import nas_play
         self.archive.mkdir()
