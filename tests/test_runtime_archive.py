@@ -208,6 +208,93 @@ class RuntimeArchiveTests(unittest.TestCase):
         (self.local/online.MODE).mkdir();(slot).rename(self.local/online.MODE/'moved')
         self.assertIsNone(online.offline_runtime(self.c,GAME))
 
+    def publish_online_build(self):
+        import nas_play, online
+        slot,release=self.online_build()
+        self.archive.mkdir()
+        remote=Path(self.quiet(nas_play.publish,self.c)['path'])
+        return slot,release,remote,self.c.game()['nasRuntime']
+
+    def rollback(self,root):
+        """An older build kept for rollback, with a link to it like a version switch leaves."""
+        import shutil
+        older=root/'releases'/'older';shutil.copytree(root/'current',older)
+        (root/'current-before-older').symlink_to('releases/older',target_is_directory=True)
+        (root/'releases'/'.publishing-in-progress').mkdir()
+        return older
+
+    def test_nas_move_also_clears_older_offline_builds(self):
+        import nas_play
+        older=self.rollback(self.local)
+        self.archive.mkdir()
+        self.quiet(nas_play.publish,self.c)
+        self.assertFalse(older.exists());self.assertFalse(self.runtime.exists())
+        self.assertFalse((self.local/'current-before-older').is_symlink())
+        self.assertTrue((self.local/'releases'/'.publishing-in-progress').is_dir())
+        self.assertEqual(self.saved(),b'keep my save')
+
+    def test_nas_move_also_clears_older_online_builds(self):
+        import nas_play
+        slot,release=self.online_build()
+        older=self.rollback(slot)
+        self.archive.mkdir()
+        self.quiet(nas_play.publish,self.c)
+        self.assertFalse(older.exists());self.assertFalse(release.exists())
+        self.assertFalse((slot/'current-before-older').is_symlink())
+        self.assertTrue((slot/'nas-hosts').is_dir())
+
+    def test_online_only_game_moves_its_online_build_to_the_nas(self):
+        import online
+        slot,release,remote,entry=self.publish_online_build()
+        self.assertEqual(entry['slot'],online.SHARED)
+        self.assertFalse((slot/'current').exists());self.assertFalse(release.exists())
+        self.assertTrue((remote/'online/routes.tsv').is_file());self.assertTrue((remote/'Info.plist').is_file())
+        host=slot/'nas-hosts'/entry['id']
+        self.assertEqual((host/'dmhost').read_bytes(),b'synthetic host')
+        self.assertEqual((host/'Info.plist').read_bytes(),b'synthetic bundle')
+        self.assertFalse((self.local/'nas-hosts').exists())
+        self.assertEqual(self.saved(),b'keep my save')
+
+    def test_online_build_on_the_nas_plays_offline_with_networking_off(self):
+        slot,release,remote,entry=self.publish_online_build()
+        captured=self.offline_launch()
+        self.assertEqual(Path(captured['host']).resolve(),(slot/'nas-hosts'/entry['id']/'dmhost').resolve())
+        self.assertEqual(captured['modules'],remote/'modules')
+        self.assertNotIn('DM_NETWORK',captured['env'])
+        self.assertEqual(Path(captured['env']['DM_PSO_USER']).resolve(),(slot/'pso_user/pipelines.tsv').resolve())
+
+    def test_online_build_on_the_nas_plays_online(self):
+        import build, online
+        slot,release,remote,entry=self.publish_online_build()
+        captured={}
+        def run(args,log,env,**kwargs):captured.update(host=args[0],modules=args[1],env=env)
+        self.c.r['network']=online.MODE
+        with patch('toolchain.require_launch_environment'),patch.object(self.c,'run',side_effect=run),\
+                patch('online.slot',return_value=online.SHARED),patch('online.runtime_env',return_value={'DM_NETWORK':online.MODE}) as env:
+            self.quiet(build.launch,self.c)
+        self.assertEqual(env.call_args.args[1],remote)
+        self.assertEqual(Path(captured['host']).resolve(),(slot/'nas-hosts'/entry['id']/'dmhost').resolve())
+        self.assertEqual(captured['modules'],remote/'modules')
+        self.assertEqual(captured['env']['DM_NETWORK'],online.MODE)
+
+    def test_online_build_moves_back_into_the_online_slot(self):
+        import nas_play, online
+        slot,release,remote,entry=self.publish_online_build()
+        restored=Path(self.quiet(nas_play.restore_local,self.c)['path'])
+        self.assertTrue(restored.resolve().is_relative_to((slot/'releases').resolve()))
+        self.assertEqual(online.offline_runtime(self.c,GAME).resolve(),restored.resolve())
+        self.assertFalse((self.local/'current').exists())
+        self.assertTrue(remote.is_dir())
+
+    def test_online_build_on_the_nas_counts_as_ready_and_online_ready(self):
+        self.publish_online_build()
+        self.c.engine=self.root/'engine'
+        with patch('engine.inspect_source',return_value=dict(fingerprint='bundled-engine',derivedProfiles=False,inputConfig=False)),patch.object(library,'refresh_container_metadata'),patch.object(library,'profiles',return_value={}):
+            game=self.quiet(library.catalog,self.c)['games'][0]
+        self.assertTrue(game['ready']);self.assertTrue(game['onlineReady'])
+        self.assertTrue(game['playingFromNAS']);self.assertTrue(game['offlineFromOnline'])
+        self.assertFalse(game['needsPreparation'])
+
     def test_failed_nas_publish_retains_active_game(self):
         import nas_play
         self.archive.mkdir()

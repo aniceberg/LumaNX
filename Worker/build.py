@@ -679,11 +679,14 @@ def launch(c):
         g=c.game(); slot_root=online.game_root(c,g['id']); current=slot_root/'current'
         # Offline order: a local offline build, then the online build with networking off, then the NAS.
         shared=None if online.enabled(c) or current.exists() else online.offline_runtime(c,g['id'])
-        if online.enabled(c): runtime,host=current,current/'dmhost'
+        # An online build moved to the NAS plays from there in both modes, like an offline one.
+        nas_online=(g.get('nasRuntime') or {}).get('slot')==online.SHARED
+        if online.enabled(c) and (current.exists() or not nas_online or online.slot(c)!=online.SHARED): runtime,host=current,current/'dmhost'
         elif shared: runtime,host,slot_root=shared,shared/'dmhost',c.library/'games'/g['id']/online.SHARED
         else:
-            from nas_play import launch_paths
+            from nas_play import launch_paths, slot_root as nas_slot_root
             runtime,host=launch_paths(c,g,current)
+            if runtime!=current: slot_root=nas_slot_root(c,g['id'],g['nasRuntime'])
         if runtime in (current,shared): validate_runtime(runtime)
         c.begin('游戏运行中',1,1)
         # The online build keeps its own pipeline cache in either mode.

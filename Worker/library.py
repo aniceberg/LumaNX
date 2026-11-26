@@ -325,7 +325,8 @@ def catalog(c):
         g['preparationVersion']=strategy.get('version','')
         selected=next((x for x in g['packages'] if p and f"v{x['version']}"==strategy.get('version',p.get('package')) and x['type'] in ('base','update')),None)
         if selected: g['display']=selected['display'] or p['builds'].get(strategy.get('version',p['package']),{}).get('display',strategy.get('version',''))
-        g['onlineReady']=any((c.library/'games'/g['id']/name/'current/online/routes.tsv').is_file() for name in ('nextendo','nextendo-shared'))
+        nas_online=g.get('nasRuntime',{}).get('slot')=='nextendo-shared'
+        g['onlineReady']=nas_online or any((c.library/'games'/g['id']/name/'current/online/routes.tsv').is_file() for name in ('nextendo','nextendo-shared'))
         g['sourcesOnNAS']=any(p.get('nasSource') for p in g['packages'])
         g['localManagedSourceSize']=sum({p['path']:p.get('size',0) for p in g['packages'] if not p.get('nasSource')}.values())
         g['onlinePreparation'] = (online_preparation(g, online_profiles.get(g['id']), online_dynamic)
@@ -335,8 +336,8 @@ def catalog(c):
         # Without a local offline build, the online build also plays offline (see build.launch).
         shared=None if manifest else online_runtime(c,g['id'])
         shared_manifest=read(shared/'manifest.json',{}) if shared else {}
-        g['offlineFromOnline']=bool(shared_manifest)
         nas_runtime=g.get('nasRuntime',{}) if not (manifest or shared_manifest) else {}
+        g['offlineFromOnline']=bool(shared_manifest) or (bool(nas_runtime) and nas_online)
         g['playingFromNAS']=bool(nas_runtime)
         # Version and capability fields describe what an offline launch runs; only a
         # local offline build can need preparing again, so `manifest` stays offline-only.

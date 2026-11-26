@@ -42,6 +42,33 @@ def share_folder(c, chosen):
     return share
 
 
+def slot_root(c, game_id, entry=None):
+    """Local folder for a game's build slot.
+
+    The offline slot is the game folder. A NAS entry recorded with `slot` came from
+    the shared online build, which also plays offline (see build.launch).
+    """
+    local = game_root(c, 'games', game_id)
+    slot = (entry or {}).get('slot')
+    if slot is None:
+        return local
+    from online import SHARED
+    if slot != SHARED or (local / slot).is_symlink():
+        raise Failure('The playable NAS runtime record is invalid. Publish the runtime again.')
+    return local / slot
+
+
+def publishable_slot(c, game_id):
+    """The build to move: the local offline build, else the game's one online build."""
+    local = game_root(c, 'games', game_id)
+    if (local / 'current').is_symlink() and (local / 'current').exists():
+        return local, None
+    from online import SHARED, offline_runtime
+    if offline_runtime(c, game_id) and not (local / SHARED).is_symlink():
+        return local / SHARED, SHARED
+    return local, None
+
+
 def finish_publish(c, catalog, candidates, current, source):
     c.begin('Release local compiled game space', 4, 4)
     managed_sources.remove_local_copies(c, catalog, candidates)
@@ -51,6 +78,18 @@ def finish_publish(c, catalog, candidates, current, source):
         current.unlink()
     if source.is_dir():
         shutil.rmtree(source)
+    # Older local builds were kept for rollback. Without the active build they no longer
+    # share its disk blocks, so each would hold a full copy; the NAS build replaces them.
+    releases = source.parent
+    if releases.is_dir() and not releases.is_symlink():
+        for old in releases.iterdir():
+            if old.name.startswith('.') or old.is_symlink() or not old.is_dir():
+                continue  # in-progress staging folders start with a dot
+            c.check()
+            shutil.rmtree(old)
+    for link in current.parent.glob('current*'):
+        if link.is_symlink() and not link.exists():
+            link.unlink()  # rollback links that pointed at the removed builds
 
 
 def publish(c):
@@ -60,8 +99,6 @@ def publish(c):
         catalog = c.catalog()
         game = next((row for row in catalog['games'] if row['id'] == c.r.get('gameId')), None)
         if game is None: raise Failure('游戏未登记在当前游戏库中。')
-        local = game_root(c, 'games', game['id'])
-        current = local / 'current'
         share = share_folder(c, c.r.get('archiveRoot'))
         include_sources = c.r.get('includeManagedSources') is True
 
@@ -70,16 +107,21 @@ def publish(c):
         atomic(c.jobpath, c.job)
         prior = game.get('nasRuntime', {})
         old_release = prior.get('localRelease')
+        local, slot = publishable_slot(c, game['id'])
         if (old_release and Path(old_release).name == old_release
-                and Path(prior['path']).parent.parent == share):
-            pending = contained(local/'releases', local/'releases'/old_release)
-            if (not current.exists() and not current.is_symlink()) or current.resolve() == pending:
+                and Path(prior['path']).parent.parent == share and slot_root(c, game['id'], prior) == local):
+            # An interrupted publish finishes in the slot it started from.
+            prior_local = slot_root(c, game['id'], prior)
+            prior_current = prior_local / 'current'
+            pending = contained(prior_local/'releases', prior_local/'releases'/old_release)
+            if (not prior_current.exists() and not prior_current.is_symlink()) or prior_current.resolve() == pending:
                 remote, _, _ = authenticated_runtime(prior)
                 candidates = move_sources(c, game, share) if include_sources else {}
                 c.check()
                 c.save_catalog(catalog)
-                finish_publish(c, catalog, candidates, current, pending)
+                finish_publish(c, catalog, candidates, prior_current, pending)
                 return {'path': str(remote), 'savesKeptLocal': True}
+        current = local / 'current'
         if not current.is_symlink() or not current.exists():
             raise Failure('Prepare a local runtime before publishing it to the NAS.')
         source = contained(local / 'releases', current.resolve(strict=True))
@@ -112,6 +154,9 @@ def publish(c):
             host.parent.mkdir()
             clone(source / 'dmhost', host)
             host.chmod(0o755)
+            if slot:
+                # The online engine reads its bundle identity from Info.plist beside dmhost.
+                clone(source / 'Info.plist', host.parent / 'Info.plist')
             c.check()
             staging.rename(remote)
 
@@ -122,6 +167,8 @@ def publish(c):
         if not manifest.get('artifacts'):
             entry['artifactInventory'] = expected
         entry.update({key: manifest[key] for key in ('internalVersion', 'retailVersion', 'retailVersionSource') if key in manifest})
+        if slot:
+            entry['slot'] = slot
         game['nasRuntime'] = entry
         c.check()
         c.save_catalog(catalog)
@@ -161,7 +208,8 @@ def launch_paths(c, game, current):
         (remote / 'romfs.img').is_file() or (remote / 'romfs').is_dir()
     ):
         raise Failure('The playable NAS runtime is incomplete. Publish the runtime again.')
-    host = contained(current.parent / 'nas-hosts', current.parent / 'nas-hosts' / entry['id'] / 'dmhost')
+    hosts = slot_root(c, game['id'], entry) / 'nas-hosts'
+    host = contained(hosts, hosts / entry['id'] / 'dmhost')
     if not host.is_file():
         raise Failure('The local NAS game host is missing. Publish the runtime again.')
     return remote, host
@@ -183,12 +231,13 @@ def restore_local(c):
 
     with c.lock('execution'), c.lock():
         game = c.game()
-        local = game_root(c, 'games', game['id'])
+        entry = game.get('nasRuntime')
+        # An online build comes back into the online slot, where it plays in both modes.
+        local = slot_root(c, game['id'], entry)
         current = local / 'current'
         if current.exists():
             validate_runtime(current)
             return {'path': str(current.resolve()), 'alreadyLocal': True}
-        entry = game.get('nasRuntime')
         if not entry:
             raise Failure('No playable NAS runtime is registered for this game.')
         source, data, manifest = authenticated_runtime(entry)
