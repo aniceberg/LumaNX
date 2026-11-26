@@ -218,4 +218,42 @@ class OnlineTests(unittest.TestCase):
             p=self.engine/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('changed')
         with self.assertRaises(SystemExit):fetch_online_engine.apply(self.engine)
 
+class OnlineEngineToolsTests(unittest.TestCase):
+    """An online build prepares its engine's tools itself when they are missing."""
+    def test_missing_tools_are_prepared(self):
+        with patch('engine.prepared_tools',side_effect=Failure('外部引擎工具尚未准备或源码已变化')),patch('engine.prepare') as prepare:
+            online.ensure_engine_tools(SimpleNamespace())
+        prepare.assert_called_once()
+
+    def test_ready_tools_are_left_alone(self):
+        with patch('engine.prepared_tools',return_value=Path('/ready')),patch('engine.prepare') as prepare:
+            online.ensure_engine_tools(SimpleNamespace())
+        prepare.assert_not_called()
+
+    def run_main(self,network):
+        import contextlib, json, os, main
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);engine=root/'online-engine'
+            (engine/'dm/tools').mkdir(parents=True)
+            for name in ('nextendo_patches.py','nextendo_services.py'):(engine/'dm/tools'/name).write_text('')
+            request=dict(schema=1,taskId='t',operation='build',gameId='0100C2500FC20000',privateRoot=str(root/'private'),
+                         library=str(root/'library'),engineDir='',onlineEngineDir=str(engine))
+            if network: request['network']=network
+            path=root/'request.json';path.write_text(json.dumps(request));os.chmod(path,0o600)
+            order=[]
+            def lock(self,exclusive=False):
+                order.append('lock');return contextlib.nullcontext()
+            with patch.object(sys,'argv',['main.py','--request',str(path)]),redirect_stdout(StringIO()),\
+                    patch('online.ensure_engine_tools',side_effect=lambda c:order.append('tools')),\
+                    patch('build.build',side_effect=lambda c:order.append('build') or {}),\
+                    patch.object(Context,'toolchain_lock',lock):
+                main.main()
+            return order
+
+    def test_online_build_prepares_tools_before_taking_the_toolchain_lock(self):
+        self.assertEqual(self.run_main('nextendo'),['tools','lock','build'])
+
+    def test_offline_build_does_not_touch_online_tools(self):
+        self.assertEqual(self.run_main(None),['lock','build'])
+
 if __name__=='__main__':unittest.main()

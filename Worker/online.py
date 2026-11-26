@@ -14,6 +14,20 @@ SHARED = 'nextendo-shared'
 
 def enabled(c): return getattr(c,'r',{}).get('network') == MODE
 
+def ensure_engine_tools(c):
+    """Prepare the online engine's tools when an online build finds none for its fingerprint.
+
+    The same step as "Prepare online engine" in Settings. The online engine is not
+    bundled, so nothing prepares it at startup, and any change to its source or to
+    the Worker bridge files gives it a new fingerprint. Call this before the build
+    takes the shared toolchain lock: preparing needs the lock exclusively.
+    """
+    from engine import prepare, prepared_tools
+    try:
+        prepared_tools(c)
+    except Failure:
+        prepare(c)
+
 def select_engine(request):
     selected = str(request.get('onlineEngineDir') or '').strip()
     if not selected: raise Failure('尚未选择 Nextendo 联机引擎目录，请先在设置中指定。')

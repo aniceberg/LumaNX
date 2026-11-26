@@ -45,6 +45,9 @@ def main():
         if request['operation'] not in ops: raise Failure('不支持的任务类型。')
         operation=request['operation']
         if getattr(c,'engineError',None): raise c.engineError
+        if operation=='build' and request.get('network')=='nextendo':
+            from online import ensure_engine_tools
+            ensure_engine_tools(c)
         if operation in ('installMetal','uninstallMetal','build','migrate','launch','exportIPA','convertFiles'):
             with c.toolchain_lock(exclusive=operation in ('installMetal','uninstallMetal','convertFiles')):
                 result=ops[operation](c)
