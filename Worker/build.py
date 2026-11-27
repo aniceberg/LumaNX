@@ -380,8 +380,11 @@ def install(c,root,repo,gp,key,host,romfs,modules,shader,aoc=None,font=None,shar
     manifest['assetCompression']=requested
     if online.enabled(c):
         if not loose: manifest['onlineImageReader']=True
-        if b'DM_NEXTENDO_CREDENTIAL_PIPE\0' in (stage/'dmhost').read_bytes():
+        host_bytes=(stage/'dmhost').read_bytes()
+        if b'DM_NEXTENDO_CREDENTIAL_PIPE\0' in host_bytes:
             manifest['nextendoCredentialPipe']=True
+            # Hosts that read renewed credentials while the game runs (online.CREDENTIAL_STREAM).
+            if online.CREDENTIAL_STREAM in host_bytes: manifest['nextendoCredentialStream']=True
     manifest['artifacts']=runtime_inventory(c,stage)
     if shared and any(manifest['artifacts']['files'].get(name) != expected for name,expected in shared[1].items()):
         raise Failure('复用的着色器在复制时发生改变，请重新准备游戏。')
@@ -711,7 +714,9 @@ def launch(c):
         env.pop('DM_NEXTENDO_CREDENTIAL_PIPE',None)
         if online.enabled(c) and c.r.get('credentialPipe') is True and read(runtime/'manifest.json',{}).get('nextendoCredentialPipe') is True:
             env['DM_NEXTENDO_CREDENTIAL_PIPE']='1'
-            launch_options={'stdin':sys.stdin.buffer}
+            # LumaNX keeps the pipe open and sends renewed credentials; an older host gets only the first.
+            stream=read(runtime/'manifest.json',{}).get('nextendoCredentialStream') is True
+            launch_options={'stdin':sys.stdin.buffer if stream else online.first_credential_pipe(sys.stdin.buffer)}
         else:
             if online.enabled(c) and c.r.get('credentialPipe') is True:
                 sys.stdin.close()

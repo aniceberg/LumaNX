@@ -4218,5 +4218,9 @@
   {
     "source": "Nextendo 根证书校验失败，请重新安装 LumaNX。",
     "en": "Nextendo's root certificates failed verification. Reinstall LumaNX."
+  },
+  {
+    "source": "未能读取 Nextendo 启动凭据，请重新启动游戏。",
+    "en": "Could not read the Nextendo launch credential. Start the game again."
   }
 ]

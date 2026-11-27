@@ -14,6 +14,36 @@ SHARED = 'nextendo-shared'
 
 def enabled(c): return getattr(c,'r',{}).get('network') == MODE
 
+# LumaNX writes this, then length-prefixed launch credentials: the first at launch, renewed ones
+# before the OAuth access token expires (dm/host/hle_nextendo_apple.m reads the same format).
+CREDENTIAL_STREAM = b'NXCRED1\n'
+
+def _read_exact(stream, size):
+    data = b''
+    while len(data) < size:
+        chunk = stream.read(size - len(data))
+        if not chunk: raise Failure('未能读取 Nextendo 启动凭据，请重新启动游戏。')
+        data += chunk
+    return data
+
+def first_credential_pipe(stream):
+    """For hosts built before renewal: hand over only the first credential, then end of file."""
+    if _read_exact(stream, len(CREDENTIAL_STREAM)) != CREDENTIAL_STREAM: raise Failure('未能读取 Nextendo 启动凭据，请重新启动游戏。')
+    size = int.from_bytes(_read_exact(stream, 4), 'big')
+    if not 0 < size <= 65536: raise Failure('未能读取 Nextendo 启动凭据，请重新启动游戏。')
+    credential = _read_exact(stream, size)
+    stream.close()
+    reader, writer = os.pipe()
+    def deliver():
+        try:
+            view = memoryview(credential)
+            while view: view = view[os.write(writer, view):]
+        except OSError: pass
+        finally: os.close(writer)
+    import threading
+    threading.Thread(target=deliver, daemon=True).start()   # a write larger than the pipe buffer waits for the host
+    return reader
+
 def ensure_engine_tools(c):
     """Prepare the online engine's tools when an online build finds none for its fingerprint.
 

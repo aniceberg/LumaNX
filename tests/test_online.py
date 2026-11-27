@@ -243,6 +243,29 @@ class NextendoRootsTests(unittest.TestCase):
             env=online.runtime_env(c,stage,'0400C3F00006E000')
             self.assertEqual(env['DM_NEXTENDO_BUILTIN_CA'],str(stage/online.ROOTS))
 
+class CredentialStreamTests(unittest.TestCase):
+    """LumaNX sends NXCRED1 frames; hosts built before renewal still get one credential and end of file."""
+    def stream(self,*credentials):
+        import io
+        data=online.CREDENTIAL_STREAM+b''.join(len(c).to_bytes(4,'big')+c for c in credentials)
+        return io.BufferedReader(io.BytesIO(data))
+
+    def test_older_host_gets_only_the_first_credential_then_end_of_file(self):
+        import os
+        reader=online.first_credential_pipe(self.stream(b'{"first":1}',b'{"renewed":2}'))
+        with os.fdopen(reader,'rb') as pipe: self.assertEqual(pipe.read(),b'{"first":1}')
+
+    def test_large_first_credential_does_not_block_the_launch(self):
+        import os
+        big=b'{"x":"'+b'a'*60000+b'"}'
+        reader=online.first_credential_pipe(self.stream(big))
+        with os.fdopen(reader,'rb') as pipe: self.assertEqual(pipe.read(),big)
+
+    def test_missing_or_malformed_stream_is_refused(self):
+        import io
+        for data in (b'',b'{"raw":"json"}',online.CREDENTIAL_STREAM+(0).to_bytes(4,'big'),online.CREDENTIAL_STREAM+(70000).to_bytes(4,'big')):
+            with self.assertRaises(Failure): online.first_credential_pipe(io.BufferedReader(io.BytesIO(data)))
+
 class OnlineEngineToolsTests(unittest.TestCase):
     """An online build prepares its engine's tools itself when they are missing."""
     def test_missing_tools_are_prepared(self):

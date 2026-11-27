@@ -37,6 +37,9 @@ final class WorkerOutput: @unchecked Sendable {
     private var attemptedBundledEngineInitialization = false
     private var lastWorkerEvent: [String:Date] = [:]
     private var deletedTaskIDs = Set<String>()
+    private var credentialWriters: [String: FileHandle] = [:]
+    private var credentialRenewals: [String: Task<Void,Never>] = [:]
+    private let credentialQueue = DispatchQueue(label: "org.lumanx.nextendo.credential-pipe")
     private var documentationWindow:NSWindow?
     @Published var canUninstallMetal = false
     @Published var engineSupportsInput = false
@@ -327,6 +330,34 @@ final class WorkerOutput: @unchecked Sendable {
             executionTask=worker("build",extra:request) { _ in self.notice="游戏已准备完成，可以启动。" }
         }
     }
+    // Running online games get renewed Nextendo credentials over their launch pipe
+    // (dm/host/hle_nextendo_apple.m, Worker/online.py): the OAuth access token lasts an
+    // hour and the game holds no refresh token, so friends and presence would stop.
+    static let credentialStreamMagic = Data("NXCRED1\n".utf8)
+    static let credentialRenewalInterval: Duration = .seconds(40 * 60)
+    static func credentialFrame(_ credential: Data) -> Data {
+        let size = UInt32(credential.count)
+        return Data([UInt8(size >> 24 & 0xff), UInt8(size >> 16 & 0xff), UInt8(size >> 8 & 0xff), UInt8(size & 0xff)]) + credential
+    }
+    private func renewCredentials(for id: String) -> Task<Void,Never> {
+        // Testing only: `defaults write <bundle id> NextendoCredentialRenewalSeconds 120` renews sooner.
+        let testing = UserDefaults.standard.integer(forKey: "NextendoCredentialRenewalSeconds")
+        let interval: Duration = testing >= 60 ? .seconds(testing) : Self.credentialRenewalInterval
+        return Task { [weak self] in
+            var wait = interval
+            while !Task.isCancelled {
+                try? await Task.sleep(for: wait)
+                guard !Task.isCancelled, let self, let writer = self.credentialWriters[id] else { return }
+                // The launch path renews the access token unless 50 minutes remain, so every frame carries most of an hour.
+                guard let credential = try? await self.nextendo.gameLaunchCredential(), !Task.isCancelled else {
+                    wait = .seconds(120); continue   // sign-in busy or the network briefly down: try again soon
+                }
+                let frame = Self.credentialFrame(credential)
+                self.credentialQueue.async { try? writer.write(contentsOf: frame) }
+                wait = interval
+            }
+        }
+    }
     func launchOnline(_ game: Game, offlineWhenSignedOut: Bool = false) {
         guard !executionBusy, queue.isEmpty, runtimeReady else { error = "构建与游戏运行互斥，请等待当前任务结束。"; return }
         let library = preferences.library
@@ -347,7 +378,9 @@ final class WorkerOutput: @unchecked Sendable {
             guard !executionBusy, queue.isEmpty, library == preferences.library,
                   engineDir == preferences.onlineEngineDir else { return }
             if let credential {
-                executionTask=worker("launch",extra:request.merging(["gameId":game.id,"gameLanguage":gameLanguage(for:game.id).rawValue,"credentialPipe":true]) {$1},credential:credential)
+                let id = worker("launch",extra:request.merging(["gameId":game.id,"gameLanguage":gameLanguage(for:game.id).rawValue,"credentialPipe":true]) {$1},credential:credential)
+                executionTask = id
+                if credentialWriters[id] != nil { credentialRenewals[id] = renewCredentials(for:id) }
             } else if offlineWhenSignedOut, game.ready == true {
                 launch(game, offline: true)
             } else {
@@ -569,6 +602,8 @@ final class WorkerOutput: @unchecked Sendable {
             process.terminationHandler = { p in
                 pipe.fileHandleForReading.readabilityHandler = nil; err.fileHandleForReading.readabilityHandler = nil
                 DispatchQueue.main.asyncAfter(deadline:.now()+0.15) {
+                    self.credentialRenewals.removeValue(forKey:id)?.cancel()
+                    if let writer = self.credentialWriters.removeValue(forKey:id) { self.credentialQueue.async { try? writer.close() } }
                     self.suspensions.removeValue(forKey:id)?.resume()
                     self.processes[id] = nil; try? FileManager.default.removeItem(at:file)
                     if operation=="catalog" {self.catalogWorkers=max(0,self.catalogWorkers-1)}
@@ -602,10 +637,10 @@ final class WorkerOutput: @unchecked Sendable {
             callbacks[id] = completion; processes[id] = process
             try process.run()
             if let credential, let writer = credentialPipe?.fileHandleForWriting {
-                DispatchQueue.global(qos: .userInitiated).async {
-                    defer { try? writer.close() }
-                    try? writer.write(contentsOf: credential)
-                }
+                // The pipe stays open while the game runs: renewed credentials follow (renewCredentials).
+                credentialWriters[id] = writer
+                let frame = Self.credentialStreamMagic + Self.credentialFrame(credential)
+                credentialQueue.async { try? writer.write(contentsOf: frame) }
             }
             if operation == "preflight" {lastWorkerEvent[id]=Date();watchEnvironmentWorker(id)}
         } catch {
