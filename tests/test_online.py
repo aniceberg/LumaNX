@@ -218,6 +218,31 @@ class OnlineTests(unittest.TestCase):
             p=self.engine/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('changed')
         with self.assertRaises(SystemExit):fetch_online_engine.apply(self.engine)
 
+class NextendoRootsTests(unittest.TestCase):
+    """Games with their own TLS (Mario Kart World) get Nextendo's roots as built-in certificates."""
+    def test_shipped_roots_match_the_published_fingerprints(self):
+        data=online.trust_roots()
+        self.assertEqual(data.count(b'BEGIN CERTIFICATE'),2)
+
+    def test_altered_roots_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake=Path(d)/'online.py';fake.write_text('')
+            original=(Path(online.__file__).parent/online.ROOTS).read_bytes()
+            (Path(d)/online.ROOTS).write_bytes(original.replace(b'MII',b'MIJ',1))
+            with patch.object(online,'__file__',str(fake)):
+                with self.assertRaises(Failure):online.trust_roots()
+
+    def test_install_ships_roots_and_launch_points_the_host_at_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);(root/'nextendo-services').mkdir();(root/'nextendo-services/routes.tsv').write_text('x')
+            stage=root/'stage';stage.mkdir()
+            online.install(root,stage,'1.8.0','Mario Kart World',patch_free=True)
+            self.assertEqual((stage/online.ROOTS).read_bytes(),online.trust_roots())
+            atomic(stage/'manifest.json',{'version':'1.8.0'})
+            c=Context(dict(operation='launch',privateRoot=str(root/'private'),library=str(root/'library'),network='nextendo'))
+            env=online.runtime_env(c,stage,'0400C3F00006E000')
+            self.assertEqual(env['DM_NEXTENDO_BUILTIN_CA'],str(stage/online.ROOTS))
+
 class OnlineEngineToolsTests(unittest.TestCase):
     """An online build prepares its engine's tools itself when they are missing."""
     def test_missing_tools_are_prepared(self):

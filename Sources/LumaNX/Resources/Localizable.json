@@ -4214,5 +4214,9 @@
   {
     "source": "传输",
     "en": "Transfer"
+  },
+  {
+    "source": "Nextendo 根证书校验失败，请重新安装 LumaNX。",
+    "en": "Nextendo's root certificates failed verification. Reinstall LumaNX."
   }
 ]

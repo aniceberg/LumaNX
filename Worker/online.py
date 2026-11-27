@@ -139,6 +139,24 @@ def install(root, stage, version, name, *, patch_free=False):
     # it. Foundation reads an Info.plist beside a bare executable as its bundle's.
     with (stage/'Info.plist').open('wb') as out:
         plistlib.dump({'CFBundleShortVersionString':version,'CFBundleDisplayName':name},out)
+    (stage/ROOTS).write_bytes(trust_roots())
+
+# Games that run TLS in their own embedded OpenSSL (Mario Kart World) take their trusted
+# roots from the system's built-in certificate list, so the host serves Nextendo's roots
+# there. Published at https://wiki.nextendo.network/integration; pinned by SHA-256 here.
+ROOTS = 'nextendo-roots.pem'
+ROOT_FINGERPRINTS = (
+    'd76bf8d0d7a1cd81874b20314171de9ecb64864837d684ab689831a72b6c0a01',  # NPLN root ("Nintendo Class 2 CA - G3", made by Nextendo)
+    'a654c0eff8aa20a72280ea0ef2b5c2a17392922dd78ffbb113862e1ad2c66d49',  # Nextendo Network CA
+)
+
+def trust_roots():
+    import base64, hashlib, re
+    data = (Path(__file__).parent/ROOTS).read_bytes()
+    blocks = re.findall(rb'-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----', data, re.S)
+    found = tuple(hashlib.sha256(base64.b64decode(b''.join(block.split()))).hexdigest() for block in blocks)
+    if found != ROOT_FINGERPRINTS: raise Failure('Nextendo 根证书校验失败，请重新安装 LumaNX。')
+    return data
 
 def reads_images(repo):
     """Whether the engine's host reads b-<chain>.img; older ones open each shader as a file."""
@@ -259,6 +277,7 @@ def runtime_env(c, runtime, game_id):
     except (OSError, ValueError, plistlib.InvalidFileException): bundle = {}
     if not bundle.get('CFBundleShortVersionString'): raise Failure('Nextendo 运行文件不完整，请重新准备联机版本。')
     env = {'DM_NETWORK':MODE, 'DM_NEXTENDO_ROUTES':str(routes)}
+    if (Path(runtime)/ROOTS).is_file(): env['DM_NEXTENDO_BUILTIN_CA'] = str(Path(runtime)/ROOTS)
     # Opt-in diagnostics: result codes and counters only, never names, tokens or traffic.
     if (c.private/'online/trace').is_file(): env.update(DM_ACCOUNT_TRACE='1', DM_SSL_TRACE='1', DM_NET_TRACE='1')
     version = read(Path(runtime)/'manifest.json',{}).get('version','')
