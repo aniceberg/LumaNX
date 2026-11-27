@@ -143,6 +143,18 @@ private actor LeaseState {
         XCTAssertEqual(try store.load(),old)
         let paths = await http.paths(); XCTAssertTrue(paths.isEmpty)
     }
+    func testLaunchRenewsAnAccessTokenWithLessThanTheRequestedLifetime() async throws {
+        // The fixture token has 3500 s left: it covers a 3000 s launch but not a 3550 s one.
+        let fresh = RenewalStore(session(accessExpired:false,proofExpired:false)), quiet = RenewalHTTP([])
+        _ = try await service(fresh,quiet).prepareGameAccount(minimumAccessLifetime:3000)
+        let none = await quiet.paths(); XCTAssertTrue(none.isEmpty)
+        let store = RenewalStore(session(accessExpired:false,proofExpired:false)), http = RenewalHTTP(try replies())
+        let result = try await service(store,http).prepareGameAccount(minimumAccessLifetime:3550)
+        XCTAssertTrue(result?.hasNEXCredential == true)
+        let paths = await http.paths()
+        XCTAssertEqual(paths,["/api/oauth/token","/api/oauth/userinfo","/api/nex-token"])
+        XCTAssertEqual(try store.load()?.renewal?.accessToken,"synthetic-access-new")
+    }
     func testForcedPreparationCannotJoinAnUnforcedFreshnessSkip() async throws {
         let gate = RenewalGate(), store = RenewalStore(session(accessExpired:false,proofExpired:false),gate:gate)
         let http = RenewalHTTP(try replies(refresh:false)), service = service(store,http)

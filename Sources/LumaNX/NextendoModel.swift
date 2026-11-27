@@ -6,6 +6,8 @@ import SwiftUI
 /// Keychain store; only the public client ID is kept in preferences.
 @MainActor final class NextendoModel: ObservableObject {
     static let scopes = ["identity", "friends", "game.matchmaking", "presence"]
+    /// Access tokens last an hour; renew before a launch unless 50 minutes remain.
+    static let launchAccessLifetime: TimeInterval = 50 * 60
     @Published private(set) var account: NextendoAccountSummary?
     @Published private(set) var checkedAccount = false
     @Published private(set) var busy = false
@@ -37,7 +39,9 @@ import SwiftUI
             checkedAccount = true
             message = nil
             guard account != nil else { return nil }
-            account = try await service.prepareGameAccount()
+            // The game gets the access token but not the refresh token, and its friends and
+            // presence calls stop when the token expires: start it with most of the hour.
+            account = try await service.prepareGameAccount(minimumAccessLifetime: Self.launchAccessLifetime)
             guard let account else { return nil }
             if account.isExpired { throw NextendoError.authorizationExpired }
             return try await service.gameLaunchCredential()

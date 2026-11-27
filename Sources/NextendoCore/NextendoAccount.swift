@@ -392,6 +392,7 @@ public actor NextendoAccountService {
     private var renewalID: UUID?
     private var renewalTask: Task<RenewalOutcome, Error>?
     private var renewalForceRequested = false
+    private var renewalMinimumAccess: TimeInterval = 60
     public init(store: any NextendoCredentialStore = NextendoKeychainStore(), http: any NextendoHTTPClient = NextendoURLSessionClient(),
                 makeReceiver: @escaping @Sendable () throws -> any NextendoCallbackReceiver = {
                     #if os(macOS)
@@ -443,21 +444,28 @@ public actor NextendoAccountService {
     /// Background preparation uses only the account's already granted authority.
     /// One worker is shared by concurrent callers; a cancelled waiter does not
     /// cancel another waiter's refresh. Sign-out/new sign-in invalidates it.
-    public func prepareGameAccount(forceGameRefresh: Bool = false) async throws -> NextendoAccountSummary? {
+    /// `minimumAccessLifetime` is how long the OAuth access token must still be valid
+    /// afterwards. A game launch passes most of the token's hour: the game receives the
+    /// access token without the refresh token, so it cannot renew it while it runs.
+    public func prepareGameAccount(forceGameRefresh: Bool = false, minimumAccessLifetime: TimeInterval = 60) async throws -> NextendoAccountSummary? {
         try Task.checkCancellation()
+        let minimum = max(60, minimumAccessLifetime)
         if let task = renewalTask, let id = renewalID {
             if forceGameRefresh { renewalForceRequested = true }
+            renewalMinimumAccess = max(renewalMinimumAccess, minimum)
             let outcome = try await task.value; try Task.checkCancellation()
             // A fresh-only worker might have finished just before the forced
             // caller arrived. Its completed skip cannot satisfy a fresh mint.
-            if forceGameRefresh && outcome.skippedFreshness {
+            // Nor can a worker that only had to cover a shorter access lifetime.
+            let accessShort = (try store.load()?.renewal?.expiresAt).map { $0 <= now().addingTimeInterval(minimum) } ?? false
+            if (forceGameRefresh && outcome.skippedFreshness) || accessShort {
                 if renewalID == id { renewalID = nil; renewalTask = nil }
-                return try await prepareGameAccount(forceGameRefresh:true)
+                return try await prepareGameAccount(forceGameRefresh:forceGameRefresh, minimumAccessLifetime:minimum)
             }
             return outcome.summary
         }
         guard operationID == nil, gameCredentialRequestID == nil else { throw NextendoError.authorizationUnavailable }
-        let id = UUID(); renewalID = id; renewalForceRequested = forceGameRefresh
+        let id = UUID(); renewalID = id; renewalForceRequested = forceGameRefresh; renewalMinimumAccess = minimum
         let task = Task { try await performRenewal(id) }
         renewalTask = task
         defer { if renewalID == id { renewalID = nil; renewalTask = nil } }
@@ -476,10 +484,11 @@ public actor NextendoAccountService {
         guard let original = expected.renewal else { return .init(summary:expected.summary(at:now())) }
         guard expected.tokenKind == .nex, expected.identity?.pid != nil,
               original.scopes.contains("identity"), original.scopes.contains("game.matchmaking") else { throw NextendoError.authorizationDenied }
-        if !renewalForceRequested, let check = expected.summary(at: now()).renewalCheckAt, check > now() { return .init(summary:expected.summary(at:now()),skippedFreshness:true) }
+        let accessShort = original.expiresAt <= now().addingTimeInterval(renewalMinimumAccess)
+        if !renewalForceRequested, !accessShort, let check = expected.summary(at: now()).renewalCheckAt, check > now() { return .init(summary:expected.summary(at:now()),skippedFreshness:true) }
         var oauth = NextendoSession(tokenKind: .oauth, token: original.accessToken, identity: expected.identity,
             scopes: original.scopes, createdAt: now(), expiresAt: original.expiresAt).withRenewal(original)
-        if original.expiresAt <= now().addingTimeInterval(60) {
+        if accessShort {
             var request = URLRequest(url: URL(string: "https://nextendo.network/api/oauth/token")!)
             request.httpMethod = "POST"; request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
             request.setValue(original.clientID, forHTTPHeaderField: "X-Nextendo-Client-Id")
